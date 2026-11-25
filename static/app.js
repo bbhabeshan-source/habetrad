@@ -511,7 +511,7 @@ function drawChart() {
   const mutedColor = palette.getPropertyValue("--muted").trim();
   const lineColor = palette.getPropertyValue("--line").trim();
   const greenColor = palette.getPropertyValue("--green").trim();
-  const vermilionColor = palette.getPropertyValue("--vermilion").trim();
+  const downColor = palette.getPropertyValue("--red").trim();
 
   const bounds = chart.getBoundingClientRect();
   const ratio = window.devicePixelRatio || 1;
@@ -571,7 +571,7 @@ function drawChart() {
     const x = left + index * step + step / 2;
     const candleWidth = Math.max(1, Math.min(9, step * 0.62));
     const rising = bar.close >= bar.open;
-    const color = rising ? greenColor : vermilionColor;
+    const color = rising ? greenColor : downColor;
     context.strokeStyle = color;
     context.fillStyle = color;
     context.lineWidth = Math.max(1, Math.min(2, step * 0.15));
