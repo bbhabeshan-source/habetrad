@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Aurum Trading Terminal</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <main class="terminal">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Aurum home">
+        <span class="brand-mark">A</span>
+        <span>AURUM <small>TRADING TERMINAL</small></span>
+      </a>
+      <div class="topbar-center">
+        <span class="live-dot"></span>
+        <span id="connectionStatus" class="connection"><strong>Checking MT5</strong></span>
+        <span id="accountBadge" class="count-badge">ACCOUNT —</span>
+      </div>
+      <div class="topbar-right">
+        <span class="lock-badge">LIVE ORDERS LOCKED</span>
+        <span id="clock" class="clock">--:-- UTC</span>
+      </div>
+    </header>
+
+    <p id="dataNotice" class="notice" hidden></p>
+    <form id="connectForm" class="connect-panel" hidden>
+      <div>
+        <span class="section-kicker">LOCAL CONNECTION SETUP</span>
+        <h2>Connect your MT5 account</h2>
+        <p>Credentials are sent only to this local app and kept in memory until it stops.</p>
+      </div>
+      <label for="mt5Login">Account number<input id="mt5Login" type="number" min="1" required autocomplete="off"></label>
+      <label for="mt5Password">Password<input id="mt5Password" type="password" required autocomplete="new-password"></label>
+      <label for="mt5Server">Broker server<input id="mt5Server" required autocomplete="off" placeholder="Server shown in MT5"></label>
+      <button id="connectButton" type="submit">CONNECT MT5</button>
+    </form>
+
+    <section class="overview-strip">
+      <article class="overview-card">
+        <span class="card-caption">MARKET</span>
+        <div class="market-control">
+          <label class="sr-only" for="symbol">Forex pair or instrument</label>
+          <input id="symbol" list="symbolOptions" value="XAUUSD" autocomplete="off">
+          <datalist id="symbolOptions"></datalist>
+          <button id="analyzeButton" class="icon-button" title="Load market data" aria-label="Load market data">↻</button>
+        </div>
+        <span class="sub-caption">FOREX · METALS</span>
+      </article>
+      <article class="overview-card">
+        <span class="card-caption">BID</span>
+        <strong id="bidValue" class="metric-value">—</strong>
+        <span class="sub-caption">BROKER QUOTE</span>
+      </article>
+      <article class="overview-card">
+        <span class="card-caption">ASK</span>
+        <strong id="askValue" class="metric-value">—</strong>
+        <span class="sub-caption">BROKER QUOTE</span>
+      </article>
+      <article class="overview-card">
+        <span class="card-caption">SPREAD</span>
+        <strong id="spreadValue" class="metric-value">—</strong>
+        <span class="sub-caption">ASK − BID</span>
+      </article>
+      <article class="overview-card change-card">
+        <span class="card-caption">LAST CLOSED BAR</span>
+        <strong id="changeValue" class="metric-value">—</strong>
+        <span id="dataSource" class="sub-caption">NO PRICE FEED</span>
+      </article>
+    </section>
+
+    <section class="terminal-grid">
+      <aside class="panel watch-panel">
+        <div class="panel-heading">
+          <div>
+            <span class="section-kicker">MARKET SCANNER</span>
+            <h2>Watchlist</h2>
+          </div>
+          <span id="watchCount" class="count-badge">—</span>
+        </div>
+        <div class="watch-tabs"><span class="active">ALL MARKETS</span><span>MT5 SYMBOLS</span></div>
+        <div id="watchlist" class="watchlist">
+          <p class="empty-note">Loading broker symbols...</p>
+        </div>
+        <p id="symbolSource" class="source-note">Pairs are supplied by the MT5 broker when connected.</p>
+      </aside>
+
+      <section class="main-column">
+        <article class="panel chart-panel">
+          <div class="chart-toolbar">
+            <div>
+              <span class="section-kicker">PRICE ACTION · BROKER HISTORY</span>
+              <h2 id="chartTitle">XAUUSD <span>—</span></h2>
+            </div>
+            <div class="chart-controls">
+              <label class="sr-only" for="timeframe">Chart timeframe</label>
+              <select id="timeframe">
+                <option>M1</option><option>M2</option><option>M3</option><option>M4</option>
+                <option>M5</option><option>M6</option><option>M10</option><option>M12</option>
+                <option>M15</option><option>M20</option><option>M30</option><option>H1</option>
+                <option>H2</option><option>H3</option><option>H4</option><option>H6</option>
+                <option>H8</option><option>H12</option><option>D1</option>
+              </select>
+              <button id="resetChart" class="reset-chart" type="button">RESET VIEW</button>
+              <span id="barCount" class="count-badge">80 VISIBLE</span>
+            </div>
+          </div>
+          <div class="chart-wrap">
+            <canvas id="priceChart" aria-label="Historical candlestick chart"></canvas>
+          </div>
+          <div class="chart-help">DRAG TO PAN · SCROLL TO ZOOM · DOUBLE-CLICK TO RESET</div>
+          <div id="chartRange" class="chart-range">
+            <span>HISTORICAL DATA NOT LOADED</span><span>—</span>
+          </div>
+        </article>
+
+        <section class="indicator-grid">
+          <article class="indicator-card panel">
+            <span class="section-kicker">TREND FILTER</span>
+            <strong id="trendValue">—</strong>
+            <span>SMA 20 / SMA 50</span>
+            <small id="smaValue">— / —</small>
+          </article>
+          <article class="indicator-card panel">
+            <span class="section-kicker">MOMENTUM</span>
+            <strong id="rsiValue">—</strong>
+            <span>RSI · 14 PERIOD</span>
+            <div class="indicator-track"><i></i></div>
+          </article>
+          <article class="indicator-card panel">
+            <span class="section-kicker">VOLATILITY</span>
+            <strong id="atrValue">—</strong>
+            <span>ATR · 14 PERIOD</span>
+            <small id="rangeValue">20 BAR HIGH / LOW: —</small>
+          </article>
+        </section>
+
+        <article class="panel bot-panel">
+          <div class="panel-heading">
+            <div>
+              <span class="section-kicker">AUTOMATED MARKET SCAN · DEMO AUTO / LIVE APPROVAL</span>
+              <h2>Bot controls</h2>
+            </div>
+            <div class="bot-actions">
+              <span id="botStatus" class="count-badge">STOPPED</span>
+              <button id="botToggle" class="bot-start" type="button">START SCANNING</button>
+            </div>
+          </div>
+          <div class="bot-settings">
+            <label>Order mode
+              <select id="executionMode">
+                <option value="paper">Paper simulation</option>
+                <option value="demo" selected>MT5 demo account</option>
+                <option value="live">MT5 live account</option>
+              </select>
+            </label>
+            <label>Execution approval
+              <select id="executionPolicy">
+                <option value="auto_demo" selected>Auto-submit eligible demo orders</option>
+                <option value="manual">Confirm every order</option>
+              </select>
+            </label>
+            <label>Risk per order (% of equity)
+              <input id="riskPercent" type="number" min="1" max="100" step="1" value="1" aria-label="Risk per order as a percentage of equity">
+            </label>
+            <label>Daily loss stop
+              <select id="dailyLossLimit">
+                <option value="0.5">0.5% equity</option>
+                <option value="1">1% equity</option>
+                <option value="2" selected>2% equity</option>
+                <option value="3">3% equity</option>
+                <option value="5">5% equity</option>
+              </select>
+            </label>
+          </div>
+          <div class="strategy-options">
+            <span class="field-label">SIGNAL RULE · ANY SELECTED STRATEGY CAN PROPOSE A SETUP</span>
+            <label><input class="strategy-choice" type="checkbox" value="ema_trend" checked> EMA 20/50 crossover</label>
+            <label><input class="strategy-choice" type="checkbox" value="rsi_bollinger" checked> RSI + Bollinger mean reversion</label>
+            <label><input class="strategy-choice" type="checkbox" value="donchian_breakout" checked> Donchian breakout</label>
+            <label><input class="strategy-choice" type="checkbox" value="structure_break" checked> Swing break of structure</label>
+            <label><input class="strategy-choice" type="checkbox" value="ict_price_action" checked> ICT-inspired sweep + gap</label>
+          </div>
+          <p class="bot-disclaimer">Rules are simplified and unvalidated; ICT-inspired logic is not a full ICT system. Set per-order risk from 1% to 100%; a 100% cap can expose the full account, and the separate daily-loss stop can still block an order. Auto-submit runs only while scanning, only on an MT5 demo account, only when minimum size fits your risk cap, and only with one open position at a time. It never auto-submits live orders. No strategy guarantees returns.</p>
+        </article>
+
+        <article class="panel proposals-panel">
+          <div class="panel-heading">
+            <div><span class="section-kicker">ENTRY · EXIT · POSITION SIZE</span><h2>Strategy proposals</h2></div>
+            <span id="proposalCount" class="count-badge">0</span>
+          </div>
+          <div id="proposalsList" class="proposals-list">
+            <p class="empty-note">Start scanning to watch for rule-based setups.</p>
+          </div>
+        </article>
+
+        <section class="lower-grid">
+          <article class="panel news-panel">
+            <div class="panel-heading">
+              <div><span class="section-kicker">EVENT RADAR</span><h2>News &amp; calendar</h2></div>
+              <span class="disabled-badge">FEED OFFLINE</span>
+            </div>
+            <div class="event-row">
+              <span class="event-icon">!</span>
+              <div><strong>Economic calendar not connected</strong><small id="newsValue">No scheduled news data is available.</small></div>
+            </div>
+          </article>
+          <article class="panel signal-panel">
+            <span class="section-kicker">SCAN STATUS</span>
+            <h2 id="tradeStatus">Analysis only</h2>
+            <p>Signal rules do not run continuously unless you start the scanner.</p>
+          </article>
+        </section>
+      </section>
+
+      <aside class="panel paper-panel">
+        <div class="panel-heading">
+          <div><span class="section-kicker">SIMULATION ONLY</span><h2>Paper desk</h2></div>
+          <span class="paper-badge">PAPER</span>
+        </div>
+        <p class="panel-copy">Practice with a broker quote. This does not send an order to MT5.</p>
+        <div class="direction-label">SELECT DIRECTION</div>
+        <div class="direction-toggle">
+          <button type="button" class="direction active" data-side="buy">BUY</button>
+          <button type="button" class="direction" data-side="sell">SELL</button>
+        </div>
+        <label class="field-label" for="paperVolume">Volume (lots)</label>
+        <input id="paperVolume" type="number" min="0.01" max="10" step="0.01" value="0.01">
+        <label class="field-label" for="paperStop">Stop loss price</label>
+        <input id="paperStop" type="number" min="0.00001" step="any" placeholder="Required">
+        <label class="field-label" for="paperTarget">Take profit price</label>
+        <input id="paperTarget" type="number" min="0.00001" step="any" placeholder="Required">
+        <label class="confirm-line">
+          <input id="paperConfirm" type="checkbox">
+          Confirm paper order
+        </label>
+        <button id="paperButton" class="paper-submit" disabled>PLACE PAPER ORDER</button>
+        <p id="paperStatus" class="paper-status">Load live broker data to enable paper trading.</p>
+        <div class="risk-note"><strong>Risk controls</strong><span>Orders are simulated locally; results are not broker fills.</span></div>
+      </aside>
+    </section>
+
+    <footer>
+      <span>AURUM · BROKER DATA ONLY</span>
+      <span>TIMEFRAMES M1—D1</span>
+      <span>NO PROFIT OR WIN-RATE GUARANTEE</span>
+    </footer>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>
