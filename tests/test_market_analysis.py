@@ -5,7 +5,18 @@ from unittest.mock import Mock, patch
 from fastapi import HTTPException
 from pydantic import ValidationError
 
-from app import AnalysisRequest, TIMEFRAME_NAMES, _indicators, _timeframe_constant, analyze, live_quote
+from app import (
+    AnalysisRequest,
+    PaperOrderRequest,
+    TIMEFRAME_NAMES,
+    _focus_instrument,
+    _indicators,
+    _timeframe_constant,
+    analyze,
+    live_quote,
+    paper_order,
+    symbols,
+)
 
 
 class MarketAnalysisTests(unittest.TestCase):
@@ -22,6 +33,64 @@ class MarketAnalysisTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as error:
             _timeframe_constant(SimpleNamespace(), "W1")
         self.assertEqual(error.exception.status_code, 422)
+
+    def test_focus_instruments_accept_broker_suffixes_only_for_selected_markets(self):
+        self.assertEqual(_focus_instrument("XAUUSDm"), "XAUUSD")
+        self.assertEqual(_focus_instrument("XBTUSD"), "BTCUSD")
+        self.assertEqual(_focus_instrument("GBPJPYm"), "GBPJPY")
+        self.assertIsNone(_focus_instrument("AUDUSD"))
+        self.assertIsNone(_focus_instrument("GBPUSDJPY"))
+
+    def test_market_api_rejects_symbols_outside_the_focus_list(self):
+        with patch("app._market_rates") as market_rates, patch("app._mt5") as get_mt5:
+            with self.assertRaises(HTTPException) as analysis_error:
+                analyze(AnalysisRequest(symbol="AUDUSD"))
+            with self.assertRaises(HTTPException) as quote_error:
+                live_quote("AUDUSD", "M1")
+            with self.assertRaises(HTTPException) as paper_error:
+                paper_order(PaperOrderRequest(
+                    symbol="AUDUSD",
+                    side="buy",
+                    volume=0.01,
+                    entry=1.1,
+                    stop_loss=1.0,
+                    take_profit=1.2,
+                    confirmed=True,
+                ))
+
+        self.assertEqual(analysis_error.exception.status_code, 422)
+        self.assertEqual(quote_error.exception.status_code, 422)
+        self.assertEqual(paper_error.exception.status_code, 422)
+        market_rates.assert_not_called()
+        get_mt5.assert_not_called()
+
+    def test_broker_watchlist_contains_only_selected_instruments(self):
+        mt5 = Mock()
+        mt5.symbols_get.return_value = [
+            SimpleNamespace(name="AUDUSD"),
+            SimpleNamespace(name="XAUUSDm"),
+            SimpleNamespace(name="GOLD"),
+            SimpleNamespace(name="BTCUSDm"),
+            SimpleNamespace(name="BTCUSD"),
+            SimpleNamespace(name="GBPUSD"),
+            SimpleNamespace(name="EURUSD"),
+            SimpleNamespace(name="GBPJPYm"),
+            SimpleNamespace(name="ETHUSD"),
+        ]
+
+        with patch("app._mt5", return_value=mt5):
+            result = symbols()
+
+        self.assertEqual(
+            [item["symbol"] for item in result["symbols"]],
+            ["XAUUSDm", "BTCUSD", "GBPUSD", "EURUSD", "GBPJPYm", "ETHUSD"],
+        )
+        self.assertEqual(
+            [item["description"] for item in result["symbols"]],
+            ["Gold", "Bitcoin", "GBP/USD", "EUR/USD", "GBP/JPY", "Ethereum"],
+        )
+        self.assertTrue(result["connected"])
+        mt5.shutdown.assert_called_once()
 
     def test_risk_percent_accepts_only_one_through_one_hundred(self):
         self.assertEqual(AnalysisRequest(risk_percent=100).risk_percent, 100)
@@ -78,8 +147,18 @@ class MarketAnalysisTests(unittest.TestCase):
     def test_live_quote_returns_current_tick_and_candle(self):
         mt5 = Mock()
         mt5.TIMEFRAME_M1 = 1
+        mt5.ACCOUNT_TRADE_MODE_DEMO = 0
+        mt5.ACCOUNT_TRADE_MODE_REAL = 2
         mt5.symbol_info.return_value = SimpleNamespace(visible=True, digits=5)
         mt5.symbol_info_tick.return_value = SimpleNamespace(bid=1.1, ask=1.1002)
+        mt5.account_info.return_value = SimpleNamespace(
+            login=12345,
+            server="Broker-Demo",
+            balance=1000.0,
+            equity=990.5,
+            currency="USD",
+            trade_mode=0,
+        )
         mt5.copy_rates_from_pos.return_value = [{
             "time": 100,
             "open": 1.09,
@@ -94,6 +173,8 @@ class MarketAnalysisTests(unittest.TestCase):
 
         self.assertEqual(result["quote"], {"bid": 1.1, "ask": 1.1002})
         self.assertEqual(result["current_bar"]["time"], 100)
+        self.assertEqual(result["account"]["balance"], 1000.0)
+        self.assertEqual(result["account"]["equity"], 990.5)
         self.assertAlmostEqual(result["spread"], 0.0002)
         mt5.copy_rates_from_pos.assert_called_once_with("EURUSD", 1, 0, 1)
         mt5.shutdown.assert_called_once()

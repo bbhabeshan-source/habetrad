@@ -3,15 +3,15 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Aurum Trading Terminal</title>
+  <title>Hub Trading Terminal</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
   <main class="terminal">
     <header class="topbar">
-      <a class="brand" href="/" aria-label="Aurum home">
-        <span class="brand-mark">A</span>
-        <span>AURUM <small>TRADING TERMINAL</small></span>
+      <a class="brand" href="/" aria-label="Hub home">
+        <span class="brand-mark">H</span>
+        <span>HUB <small>TRADING TERMINAL</small></span>
       </a>
       <div class="topbar-center">
         <span class="live-dot"></span>
@@ -19,6 +19,7 @@
         <span id="accountBadge" class="count-badge">ACCOUNT —</span>
       </div>
       <div class="topbar-right">
+        <button id="switchAccountButton" class="switch-account" type="button" hidden>SWITCH ACCOUNT</button>
         <span class="lock-badge">LIVE ORDERS LOCKED</span>
         <span id="clock" class="clock">--:-- UTC</span>
       </div>
@@ -28,35 +29,63 @@
     <form id="connectForm" class="connect-panel" hidden>
       <div>
         <span class="section-kicker">LOCAL CONNECTION SETUP</span>
-        <h2>Connect your MT5 account</h2>
-        <p>Credentials are sent only to this local app and kept in memory until it stops.</p>
+        <h2 id="connectTitle">Connect your MT5 account</h2>
+        <p id="connectHelp">Choose Demo or Live to match your broker account. Credentials stay in this local app's memory and the password clears after submission. Live orders always need your approval.</p>
       </div>
-      <label for="mt5Login">Account number<input id="mt5Login" type="number" min="1" required autocomplete="off"></label>
-      <label for="mt5Password">Password<input id="mt5Password" type="password" required autocomplete="new-password"></label>
+      <label for="mt5AccountType">Account type
+        <select id="mt5AccountType" required>
+          <option value="demo" selected>Demo account</option>
+          <option value="live">Live account</option>
+        </select>
+      </label>
+      <label for="mt5Login">MT5 account number<input id="mt5Login" type="number" min="1" required autocomplete="off"></label>
+      <label for="mt5Password">Trading password<input id="mt5Password" type="password" required autocomplete="new-password"></label>
       <label for="mt5Server">Broker server<input id="mt5Server" required autocomplete="off" placeholder="Server shown in MT5"></label>
-      <button id="connectButton" type="submit">CONNECT MT5</button>
+      <div class="connect-actions">
+        <button id="cancelConnectButton" class="connect-cancel" type="button" hidden>Cancel</button>
+        <button id="connectButton" type="submit">CONNECT DEMO ACCOUNT</button>
+      </div>
     </form>
+
+    <section id="accountSnapshot" class="account-strip disconnected" aria-label="Connected account summary">
+      <article class="overview-card account-card">
+        <span class="card-caption">ACCOUNT TYPE</span>
+        <strong id="accountTypeValue" class="metric-value">DISCONNECTED</strong>
+        <span id="accountDetailsValue" class="sub-caption">CONNECT MT5 TO LOAD</span>
+      </article>
+      <article class="overview-card account-card">
+        <span class="card-caption">BALANCE</span>
+        <strong id="balanceValue" class="metric-value">—</strong>
+        <span class="sub-caption">BROKER ACCOUNT</span>
+      </article>
+      <article class="overview-card account-card">
+        <span class="card-caption">EQUITY</span>
+        <strong id="equityValue" class="metric-value">—</strong>
+        <span class="sub-caption">LIVE ACCOUNT VALUE</span>
+      </article>
+    </section>
 
     <section class="overview-strip">
       <article class="overview-card">
         <span class="card-caption">MARKET</span>
         <div class="market-control">
-          <label class="sr-only" for="symbol">Forex pair or instrument</label>
-          <input id="symbol" list="symbolOptions" value="XAUUSD" autocomplete="off">
-          <datalist id="symbolOptions"></datalist>
+          <label class="sr-only" for="symbol">Selected focus market</label>
+          <select id="symbol" aria-label="Selected focus market">
+            <option value="XAUUSD">Gold · XAUUSD</option>
+          </select>
           <button id="analyzeButton" class="icon-button" title="Load market data" aria-label="Load market data">↻</button>
         </div>
-        <span class="sub-caption">FOREX · METALS</span>
+        <span class="sub-caption">GOLD · CRYPTO · MAJOR FX</span>
       </article>
       <article class="overview-card">
-        <span class="card-caption">BID</span>
+        <span class="card-caption">BID · SELL</span>
         <strong id="bidValue" class="metric-value">—</strong>
-        <span class="sub-caption">BROKER QUOTE</span>
+        <span class="sub-caption">LIVE BROKER PRICE</span>
       </article>
       <article class="overview-card">
-        <span class="card-caption">ASK</span>
+        <span class="card-caption">ASK · BUY</span>
         <strong id="askValue" class="metric-value">—</strong>
-        <span class="sub-caption">BROKER QUOTE</span>
+        <span class="sub-caption">LIVE BROKER PRICE</span>
       </article>
       <article class="overview-card">
         <span class="card-caption">SPREAD</span>
@@ -83,7 +112,7 @@
         <div id="watchlist" class="watchlist">
           <p class="empty-note">Loading broker symbols...</p>
         </div>
-        <p id="symbolSource" class="source-note">Pairs are supplied by the MT5 broker when connected.</p>
+        <p id="symbolSource" class="source-note">Only selected focus markets; broker symbols appear when connected.</p>
       </aside>
 
       <section class="main-column">
@@ -242,7 +271,7 @@
     </section>
 
     <footer>
-      <span>AURUM · BROKER DATA ONLY</span>
+      <span>HUB · BROKER DATA ONLY</span>
       <span>TIMEFRAMES M1—D1</span>
       <span>NO PROFIT OR WIN-RATE GUARANTEE</span>
     </footer>

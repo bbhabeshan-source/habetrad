@@ -10,6 +10,8 @@ let scanRequested = false;
 let quoteInProgress = false;
 let orderInProgress = false;
 let connectedTradeMode = null;
+let isSwitchingAccount = false;
+let accountGeneration = 0;
 const pendingProposals = new Map();
 const seenSignalKeys = new Set();
 
@@ -25,6 +27,17 @@ const paperButton = document.getElementById("paperButton");
 const paperConfirm = document.getElementById("paperConfirm");
 const executionMode = document.getElementById("executionMode");
 const executionPolicy = document.getElementById("executionPolicy");
+const accountTypeInput = document.getElementById("mt5AccountType");
+const switchAccountButton = document.getElementById("switchAccountButton");
+const cancelConnectButton = document.getElementById("cancelConnectButton");
+const focusMarketFallback = [
+  { symbol: "XAUUSD", description: "Gold", instrument: "XAUUSD" },
+  { symbol: "BTCUSD", description: "Bitcoin", instrument: "BTCUSD" },
+  { symbol: "GBPUSD", description: "GBP/USD", instrument: "GBPUSD" },
+  { symbol: "EURUSD", description: "EUR/USD", instrument: "EURUSD" },
+  { symbol: "GBPJPY", description: "GBP/JPY", instrument: "GBPJPY" },
+  { symbol: "ETHUSD", description: "Ethereum", instrument: "ETHUSD" },
+];
 
 function showNotice(message) {
   notice.textContent = message;
@@ -35,9 +48,49 @@ function formatPrice(value, digits = 2) {
   return Number.isFinite(value) ? Number(value).toFixed(digits) : "—";
 }
 
+function formatAccountAmount(value, currency) {
+  if (value == null || !Number.isFinite(Number(value))) return "—";
+  const amount = Number(value).toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  return currency ? `${amount} ${currency}` : amount;
+}
+
 function setValue(id, value) {
   const element = document.getElementById(id);
   if (element) element.textContent = value == null ? "—" : String(value);
+}
+
+function syncConnectionControls() {
+  connectForm.hidden = isConnected && !isSwitchingAccount;
+  switchAccountButton.hidden = !isConnected || isSwitchingAccount;
+  cancelConnectButton.hidden = !isConnected;
+  document.getElementById("connectTitle").textContent = isConnected
+    ? "Switch your MT5 account"
+    : "Connect your MT5 account";
+  updateConnectButtonLabel();
+}
+
+function updateConnectButtonLabel() {
+  const accountType = accountTypeInput.value === "live" ? "LIVE" : "DEMO";
+  const button = document.getElementById("connectButton");
+  if (!button.disabled) button.textContent = `CONNECT ${accountType} ACCOUNT`;
+}
+
+function updateAccountSnapshot(account) {
+  const connected = Boolean(account.connected);
+  const snapshot = document.getElementById("accountSnapshot");
+  snapshot.classList.toggle("connected", connected);
+  snapshot.classList.toggle("disconnected", !connected);
+  setValue("accountTypeValue", connected
+    ? `${String(account.trade_mode || "account").toUpperCase()} ACCOUNT`
+    : "DISCONNECTED");
+  setValue("accountDetailsValue", connected
+    ? `${account.login} · ${account.server}`
+    : "CONNECT MT5 TO LOAD");
+  setValue("balanceValue", connected ? formatAccountAmount(account.balance, account.currency) : "—");
+  setValue("equityValue", connected ? formatAccountAmount(account.equity, account.currency) : "—");
 }
 
 function friendlyConnectionMessage(reason) {
@@ -53,16 +106,21 @@ async function loadStatus() {
     const data = await response.json();
     isConnected = Boolean(data.mt5.connected);
     connectedTradeMode = data.mt5.trade_mode || null;
+    if (isConnected && ["demo", "live"].includes(connectedTradeMode)) {
+      accountTypeInput.value = connectedTradeMode;
+      executionMode.value = connectedTradeMode;
+    }
     syncExecutionPolicy();
-    connectForm.hidden = isConnected;
+    syncConnectionControls();
     statusElement.querySelector("strong").textContent = isConnected
       ? `MT5 CONNECTED · ${data.mt5.login || data.mt5.server || "BROKER"}`
       : "MT5 DISCONNECTED";
     statusDot.classList.toggle("connected", isConnected);
+    updateAccountSnapshot(data.mt5);
     setValue(
       "accountBadge",
       isConnected
-        ? `${String(connectedTradeMode || "ACCOUNT").toUpperCase()} · ${data.mt5.equity} ${data.mt5.currency}`
+        ? `${String(connectedTradeMode || "ACCOUNT").toUpperCase()} · ${data.mt5.currency}`
         : "ACCOUNT —",
     );
     if (!isConnected) showNotice(friendlyConnectionMessage(data.mt5.reason));
@@ -71,7 +129,8 @@ async function loadStatus() {
     isConnected = false;
     connectedTradeMode = null;
     syncExecutionPolicy();
-    connectForm.hidden = false;
+    syncConnectionControls();
+    updateAccountSnapshot({ connected: false });
     statusElement.querySelector("strong").textContent = "STATUS UNAVAILABLE";
     showNotice("Could not check the MT5 connection. Refresh the page or restart the local server.");
   }
@@ -89,17 +148,26 @@ function syncExecutionPolicy() {
 }
 
 async function refreshLiveQuote() {
-  if (!isConnected || scanInProgress || quoteInProgress || orderInProgress) return;
+  if (!isConnected || isSwitchingAccount || scanInProgress || quoteInProgress || orderInProgress) return;
   quoteInProgress = true;
+  const requestAccountGeneration = accountGeneration;
   try {
     const symbol = symbolInput.value.trim();
     const timeframe = timeframeInput.value;
     const query = new URLSearchParams({ symbol, timeframe });
     const response = await fetch(`/api/quote?${query}`);
     const data = await response.json();
+    if (requestAccountGeneration !== accountGeneration) return;
     if (!response.ok) throw new Error(data.detail || "Live quote unavailable.");
     if (symbol !== symbolInput.value.trim() || timeframe !== timeframeInput.value) return;
 
+    if (data.account) {
+      updateAccountSnapshot({ connected: true, ...data.account });
+      setValue(
+        "accountBadge",
+        `${String(data.account.trade_mode || "ACCOUNT").toUpperCase()} · ${data.account.currency}`,
+      );
+    }
     setValue("bidValue", formatPrice(data.quote.bid, data.digits));
     setValue("askValue", formatPrice(data.quote.ask, data.digits));
     setValue("spreadValue", formatPrice(data.spread, data.digits));
@@ -129,35 +197,39 @@ async function refreshLiveQuote() {
     }
     if (notice.textContent.startsWith("Live quote update failed:")) showNotice("");
   } catch (error) {
-    setValue("dataSource", "LIVE QUOTE PAUSED · RETRYING");
-    showNotice(`Live quote update failed: ${error.message}`);
+    if (requestAccountGeneration === accountGeneration) {
+      setValue("dataSource", "LIVE QUOTE PAUSED · RETRYING");
+      showNotice(`Live quote update failed: ${error.message}`);
+    }
   } finally {
     quoteInProgress = false;
   }
 }
 
 function renderWatchlist(symbols) {
+  const marketItems = Array.isArray(symbols) && symbols.length ? symbols : focusMarketFallback;
   const list = document.getElementById("watchlist");
-  const options = document.getElementById("symbolOptions");
+  const previousSymbol = symbolInput.value.trim().toUpperCase();
   list.replaceChildren();
-  options.replaceChildren();
+  symbolInput.replaceChildren();
 
-  symbols.forEach((item) => {
+  marketItems.forEach((item) => {
     const option = document.createElement("option");
     option.value = item.symbol;
-    option.label = item.description || item.symbol;
-    options.appendChild(option);
+    option.textContent = `${item.description || item.symbol} · ${item.symbol}`;
+    symbolInput.appendChild(option);
 
     const button = document.createElement("button");
     button.type = "button";
     button.className = "watch-item";
     button.dataset.symbol = item.symbol;
+    button.setAttribute("aria-label", `${item.description || item.symbol}: ${item.symbol}`);
     const label = document.createElement("span");
     label.className = "watch-symbol";
-    label.textContent = item.symbol;
+    label.textContent = item.description || item.symbol;
     const category = document.createElement("span");
     category.className = "watch-type";
-    category.textContent = /xau|gold/i.test(item.symbol) ? "METAL" : "FX";
+    category.textContent = item.symbol;
     button.append(label, category);
     button.addEventListener("click", () => {
       symbolInput.value = item.symbol;
@@ -168,7 +240,11 @@ function renderWatchlist(symbols) {
     list.appendChild(button);
   });
 
-  setValue("watchCount", String(symbols.length).padStart(2, "0"));
+  const retained = marketItems.find((item) => item.symbol.toUpperCase() === previousSymbol);
+  const gold = marketItems.find((item) => item.instrument === "XAUUSD");
+  const selected = retained || gold || marketItems[0];
+  if (selected) symbolInput.value = selected.symbol;
+  setValue("watchCount", String(marketItems.length).padStart(2, "0"));
   updateActiveSymbol();
 }
 
@@ -183,23 +259,17 @@ async function loadSymbols() {
   try {
     const response = await fetch("/api/symbols");
     const data = await response.json();
+    if (!response.ok || !Array.isArray(data.symbols)) {
+      throw new Error(data.detail || "The broker symbol list is unavailable.");
+    }
     renderWatchlist(data.symbols);
     setValue("symbolSource", data.source || "MT5 broker symbols");
 
-    const gold = data.symbols.find((item) => item.symbol.toUpperCase() === "XAUUSD")
-      || data.symbols.find((item) => item.symbol.toUpperCase() === "XAUUSDM")
-      || data.symbols.find((item) =>
-        item.symbol.toUpperCase().startsWith("XAUUSD")
-        && !item.symbol.toUpperCase().includes("247"));
-    if (data.connected && gold && symbolInput.value.toUpperCase() === "XAUUSD") {
-      symbolInput.value = gold.symbol;
-      updateActiveSymbol();
-    }
-
     if (!data.connected && data.reason) showNotice(friendlyConnectionMessage(data.reason));
-  } catch {
-    setValue("symbolSource", "Could not load broker symbol list");
-    showNotice("Could not load the MT5 symbol list. Check the local server and terminal.");
+  } catch (error) {
+    renderWatchlist(focusMarketFallback);
+    setValue("symbolSource", "Selected focus markets; broker symbols unavailable");
+    showNotice(`Could not load broker symbols: ${error.message}`);
   }
 }
 
@@ -207,7 +277,9 @@ async function connectAccount(event) {
   event.preventDefault();
   const connectButton = document.getElementById("connectButton");
   const passwordInput = document.getElementById("mt5Password");
+  const accountType = accountTypeInput.value;
   connectButton.disabled = true;
+  cancelConnectButton.disabled = true;
   connectButton.textContent = "CONNECTING...";
   showNotice("Connecting to your MT5 broker...");
 
@@ -216,6 +288,7 @@ async function connectAccount(event) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        account_type: accountType,
         login: Number(document.getElementById("mt5Login").value),
         password: passwordInput.value,
         server: document.getElementById("mt5Server").value.trim(),
@@ -223,6 +296,9 @@ async function connectAccount(event) {
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result.detail || "MT5 connection failed.");
+    isSwitchingAccount = false;
+    accountGeneration += 1;
+    clearPendingProposals();
     setValue("paperStatus", result.message);
     await loadStatus();
     await loadSymbols();
@@ -232,8 +308,31 @@ async function connectAccount(event) {
   } finally {
     passwordInput.value = "";
     connectButton.disabled = false;
-    connectButton.textContent = "CONNECT MT5";
+    cancelConnectButton.disabled = false;
+    updateConnectButtonLabel();
   }
+}
+
+function beginAccountSwitch() {
+  if (scanTimer) toggleBot();
+  if (orderInProgress) {
+    showNotice("Wait for the current order request to finish before switching accounts.");
+    return;
+  }
+  accountGeneration += 1;
+  clearPendingProposals();
+  setValue("tradeStatus", "Scanner stopped for account switching. Analyze again after connecting.");
+  setValue("dataSource", "ACCOUNT SWITCH · QUOTES PAUSED");
+  isSwitchingAccount = true;
+  accountTypeInput.value = connectedTradeMode === "live" ? "live" : "demo";
+  syncConnectionControls();
+  showNotice("Your current account stays connected until the new login is verified.");
+}
+
+function cancelAccountSwitch() {
+  isSwitchingAccount = false;
+  syncConnectionControls();
+  showNotice("");
 }
 
 function renderAnalysis(data, preserveViewport = false) {
@@ -388,6 +487,19 @@ function renderProposals(proposals, data) {
   setValue("proposalCount", String(pendingProposals.size));
 }
 
+function clearPendingProposals() {
+  pendingProposals.clear();
+  seenSignalKeys.clear();
+  const list = document.getElementById("proposalsList");
+  if (list) {
+    const note = document.createElement("p");
+    note.className = "empty-note";
+    note.textContent = "Account changed. Run analysis for fresh proposals.";
+    list.replaceChildren(note);
+  }
+  setValue("proposalCount", "0");
+}
+
 function selectedStrategies() {
   return Array.from(document.querySelectorAll(".strategy-choice:checked"), (input) => input.value);
 }
@@ -395,6 +507,11 @@ function selectedStrategies() {
 function drawChart() {
   const context = chart.getContext("2d");
   if (!context) return;
+  const palette = getComputedStyle(document.documentElement);
+  const mutedColor = palette.getPropertyValue("--muted").trim();
+  const lineColor = palette.getPropertyValue("--line").trim();
+  const greenColor = palette.getPropertyValue("--green").trim();
+  const vermilionColor = palette.getPropertyValue("--vermilion").trim();
 
   const bounds = chart.getBoundingClientRect();
   const ratio = window.devicePixelRatio || 1;
@@ -406,7 +523,7 @@ function drawChart() {
   context.clearRect(0, 0, width, height);
 
   if (!marketData || marketData.bars.length === 0) {
-    context.fillStyle = "#9b8ba3";
+    context.fillStyle = mutedColor;
     context.font = "12px Segoe UI";
     context.fillText("Historical candles appear here after MT5 connects.", 14, 25);
     return;
@@ -441,12 +558,12 @@ function drawChart() {
   for (let index = 0; index <= 4; index += 1) {
     const y = top + (plotHeight * index) / 4;
     const price = maxPrice - ((maxPrice - minPrice) * index) / 4;
-    context.strokeStyle = "#32223b";
+    context.strokeStyle = lineColor;
     context.beginPath();
     context.moveTo(left, y);
     context.lineTo(left + plotWidth, y);
     context.stroke();
-    context.fillStyle = "#9b8ba3";
+    context.fillStyle = mutedColor;
     context.fillText(price.toFixed(digits), width - 4, y + 3);
   }
 
@@ -454,7 +571,7 @@ function drawChart() {
     const x = left + index * step + step / 2;
     const candleWidth = Math.max(1, Math.min(9, step * 0.62));
     const rising = bar.close >= bar.open;
-    const color = rising ? "#53e3a1" : "#fb647f";
+    const color = rising ? greenColor : vermilionColor;
     context.strokeStyle = color;
     context.fillStyle = color;
     context.lineWidth = Math.max(1, Math.min(2, step * 0.15));
@@ -471,13 +588,13 @@ function drawChart() {
     const y = priceY(liveBid);
     context.save();
     context.setLineDash([4, 4]);
-    context.strokeStyle = "#53e3a1";
+    context.strokeStyle = greenColor;
     context.beginPath();
     context.moveTo(left, y);
     context.lineTo(left + plotWidth, y);
     context.stroke();
     context.setLineDash([]);
-    context.fillStyle = "#53e3a1";
+    context.fillStyle = greenColor;
     context.textAlign = "right";
     context.fillText(`LIVE ${formatPrice(liveBid, digits)}`, left + plotWidth - 4, y - 4);
     context.restore();
@@ -510,6 +627,10 @@ function panChart(deltaPixels) {
 }
 
 async function analyze({ preserveViewport = false } = {}) {
+  if (isSwitchingAccount) {
+    showNotice("Finish or cancel the account switch before analyzing.");
+    return;
+  }
   if (scanInProgress) {
     if (scanTimer) scanRequested = true;
     return;
@@ -521,6 +642,7 @@ async function analyze({ preserveViewport = false } = {}) {
     return;
   }
   scanInProgress = true;
+  const requestAccountGeneration = accountGeneration;
   analyzeButton.disabled = true;
   analyzeButton.textContent = "…";
   if (!marketData) showNotice("Loading broker quote and candle history...");
@@ -544,9 +666,11 @@ async function analyze({ preserveViewport = false } = {}) {
       }),
     });
     const data = await response.json();
+    if (requestAccountGeneration !== accountGeneration) return;
     if (!response.ok) throw new Error(data.detail || "Could not load market data.");
     renderAnalysis(data, preserveViewport);
   } catch (error) {
+    if (requestAccountGeneration !== accountGeneration) return;
     if (!preserveViewport) {
       marketData = null;
       drawChart();
@@ -635,6 +759,10 @@ function toggleBot() {
     setValue("tradeStatus", "Scanner stopped. Pending proposals remain available for review.");
     return;
   }
+  if (isSwitchingAccount) {
+    showNotice("Finish or cancel the account switch before starting the scanner.");
+    return;
+  }
   if (!isConnected) {
     showNotice("Connect the MT5 account before starting the scanner.");
     return;
@@ -719,6 +847,9 @@ paperConfirm.addEventListener("change", updatePaperButton);
 paperButton.addEventListener("click", submitPaperOrder);
 analyzeButton.addEventListener("click", analyze);
 connectForm.addEventListener("submit", connectAccount);
+switchAccountButton.addEventListener("click", beginAccountSwitch);
+cancelConnectButton.addEventListener("click", cancelAccountSwitch);
+accountTypeInput.addEventListener("change", updateConnectButtonLabel);
 symbolInput.addEventListener("input", updateActiveSymbol);
 symbolInput.addEventListener("change", () => { if (isConnected) analyze(); });
 timeframeInput.addEventListener("change", () => { if (isConnected) analyze(); });

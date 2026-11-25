@@ -18,20 +18,64 @@ TIMEFRAME_NAMES = (
     "M1", "M2", "M3", "M4", "M5", "M6", "M10", "M12", "M15",
     "M20", "M30", "H1", "H2", "H3", "H4", "H6", "H8", "H12", "D1",
 )
-FALLBACK_SYMBOLS = [
-    "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "USDCAD", "AUDUSD", "NZDUSD",
-    "EURGBP", "EURJPY", "EURCHF", "EURCAD", "EURAUD", "EURNZD", "GBPJPY",
-    "GBPCHF", "GBPCAD", "GBPAUD", "GBPNZD", "AUDJPY", "AUDNZD", "AUDCAD",
-    "AUDCHF", "NZDJPY", "NZDCAD", "NZDCHF", "CADJPY", "CADCHF", "CHFJPY",
-    "XAUUSD",
-]
-
-app = FastAPI(title="Aurum Trading Assistant")
+FOCUS_SYMBOL_ORDER = ("XAUUSD", "BTCUSD", "GBPUSD", "EURUSD", "GBPJPY", "ETHUSD")
+FOCUS_SYMBOL_PREFIXES = {
+    "XAUUSD": ("XAUUSD", "GOLD"),
+    "BTCUSD": ("BTCUSD", "XBTUSD"),
+    "GBPUSD": ("GBPUSD",),
+    "EURUSD": ("EURUSD",),
+    "GBPJPY": ("GBPJPY",),
+    "ETHUSD": ("ETHUSD",),
+}
+FOCUS_SYMBOL_LABELS = {
+    "XAUUSD": "Gold",
+    "BTCUSD": "Bitcoin",
+    "GBPUSD": "GBP/USD",
+    "EURUSD": "EUR/USD",
+    "GBPJPY": "GBP/JPY",
+    "ETHUSD": "Ethereum",
+}
+app = FastAPI(title="Hub Trading Assistant")
 app.mount("/static", StaticFiles(directory=APP_DIR / "static"), name="static")
 app.state.mt5_credentials = None
 app.state.proposals = {}
 app.state.auto_demo_attempts = {}
 AUTO_DEMO_LOCK = threading.Lock()
+
+
+def _focus_instrument(symbol):
+    candidate = str(symbol).strip()
+    normalized = candidate.upper()
+    for instrument in FOCUS_SYMBOL_ORDER:
+        for prefix in FOCUS_SYMBOL_PREFIXES[instrument]:
+            if normalized == prefix:
+                return instrument
+            if normalized.startswith(prefix):
+                suffix = candidate[len(prefix):]
+                if suffix and (suffix[0].islower() or suffix[0] in "._-#"):
+                    return instrument
+    return None
+
+
+def _require_focus_symbol(symbol):
+    candidate = str(symbol).strip()
+    if _focus_instrument(candidate) is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Choose Gold, Bitcoin, GBP/USD, EUR/USD, GBP/JPY, or Ethereum.",
+        )
+    return candidate
+
+
+def _fallback_symbol_items():
+    return [
+        {
+            "symbol": instrument,
+            "description": FOCUS_SYMBOL_LABELS[instrument],
+            "instrument": instrument,
+        }
+        for instrument in FOCUS_SYMBOL_ORDER
+    ]
 
 
 class AnalysisRequest(BaseModel):
@@ -64,6 +108,7 @@ class PaperOrderRequest(BaseModel):
 
 
 class MT5ConnectRequest(BaseModel):
+    account_type: Literal["demo", "live"]
     login: int = Field(gt=0)
     password: str = Field(min_length=1, max_length=256)
     server: str = Field(min_length=1, max_length=128)
@@ -256,6 +301,7 @@ def status():
 
 @app.get("/api/quote")
 def live_quote(symbol: str, timeframe: str):
+    symbol = _require_focus_symbol(symbol)
     mt5 = _mt5()
     try:
         normalized_timeframe, timeframe_constant = _timeframe_constant(mt5, timeframe)
@@ -281,6 +327,22 @@ def live_quote(symbol: str, timeframe: str):
             "close": float(row["close"]),
             "tick_volume": int(row["tick_volume"]),
         }
+        account_info = mt5.account_info()
+        account = None
+        if account_info is not None:
+            account_trade_mode = (
+                "demo" if account_info.trade_mode == mt5.ACCOUNT_TRADE_MODE_DEMO
+                else "live" if account_info.trade_mode == mt5.ACCOUNT_TRADE_MODE_REAL
+                else "contest"
+            )
+            account = {
+                "login": account_info.login,
+                "server": account_info.server,
+                "balance": float(account_info.balance),
+                "equity": float(account_info.equity),
+                "currency": account_info.currency,
+                "trade_mode": account_trade_mode,
+            }
         return {
             "symbol": symbol,
             "timeframe": normalized_timeframe,
@@ -289,6 +351,7 @@ def live_quote(symbol: str, timeframe: str):
             "quote": {"bid": float(tick.bid), "ask": float(tick.ask)},
             "spread": float(tick.ask) - float(tick.bid),
             "current_bar": current_bar,
+            "account": account,
         }
     finally:
         mt5.shutdown()
@@ -312,12 +375,23 @@ def connect_mt5(request: MT5ConnectRequest):
                 status_code=401,
                 detail="MT5 did not confirm this account. Check the account number, password, and broker server.",
             )
+        actual_mode = (
+            "demo" if account.trade_mode == mt5.ACCOUNT_TRADE_MODE_DEMO
+            else "live" if account.trade_mode == mt5.ACCOUNT_TRADE_MODE_REAL
+            else "contest"
+        )
+        if actual_mode != request.account_type:
+            raise HTTPException(
+                status_code=401,
+                detail=f"The broker confirmed a {actual_mode} account, but {request.account_type} was selected. Choose the matching account type.",
+            )
         app.state.mt5_credentials = credentials
         return {
             "connected": True,
             "login": account.login,
             "server": account.server,
-            "message": "Connected to MetaTrader 5. Credentials stay in memory until the app stops.",
+            "trade_mode": actual_mode,
+            "message": f"Connected to the MetaTrader 5 {actual_mode} account. Credentials stay in memory until the app stops.",
         }
     finally:
         mt5.shutdown()
@@ -331,50 +405,65 @@ def symbols():
         return {
             "connected": False,
             "reason": error.detail,
-            "source": "common-pairs fallback; broker list unavailable",
-            "symbols": [{"symbol": symbol, "description": ""} for symbol in FALLBACK_SYMBOLS],
+            "source": "focus markets; broker list unavailable",
+            "symbols": _fallback_symbol_items(),
         }
 
     try:
         broker_symbols = mt5.symbols_get()
         if broker_symbols is None:
-            raise HTTPException(status_code=503, detail="MT5 did not return its symbol list")
+            return {
+                "connected": False,
+                "reason": "MT5 did not return its symbol list.",
+                "source": "focus markets; broker list unavailable",
+                "symbols": _fallback_symbol_items(),
+            }
         if not broker_symbols:
             return {
                 "connected": False,
                 "reason": "MT5 returned no broker symbols. Sign in to an account and enable symbols in Market Watch.",
-                "source": "common-pairs fallback; broker list unavailable",
-                "symbols": [{"symbol": symbol, "description": ""} for symbol in FALLBACK_SYMBOLS],
+                "source": "focus markets; broker list unavailable",
+                "symbols": _fallback_symbol_items(),
             }
-        found = []
+        found = {}
         for item in broker_symbols:
-            base = str(getattr(item, "currency_base", "") or "")
-            quote = str(getattr(item, "currency_profit", "") or "")
-            path = str(getattr(item, "path", "") or "")
-            name = item.name.upper()
-            description = str(getattr(item, "description", "") or "")
-            is_forex = "forex" in path.lower() or (
-                len(base) == 3 and base.isalpha() and len(quote) == 3 and quote.isalpha()
+            instrument = _focus_instrument(item.name)
+            if instrument is None:
+                continue
+            symbol = item.name
+            primary_prefix = FOCUS_SYMBOL_PREFIXES[instrument][0]
+            rank = (
+                0 if symbol.upper().startswith(primary_prefix) else 1,
+                len(symbol),
+                symbol.upper(),
             )
-            is_gold = "XAU" in name or "GOLD" in description.upper()
-            if is_forex or is_gold:
-                found.append({"symbol": item.name, "description": description})
+            previous = found.get(instrument)
+            if previous is None or rank < previous[0]:
+                found[instrument] = (rank, symbol)
         if not found:
             return {
                 "connected": False,
-                "reason": "No forex or gold symbols found. Enable the broker's symbols in Market Watch.",
-                "source": "common-pairs fallback; broker list unavailable",
-                "symbols": [{"symbol": symbol, "description": ""} for symbol in FALLBACK_SYMBOLS],
+                "reason": "None of the selected markets were found. Enable Gold, Bitcoin, GBP/USD, EUR/USD, GBP/JPY, and Ethereum in Market Watch.",
+                "source": "focus markets; broker list unavailable",
+                "symbols": _fallback_symbol_items(),
             }
-        found.sort(key=lambda item: (item["symbol"].upper() != "XAUUSD", item["symbol"]))
-        return {"connected": True, "source": "MetaTrader 5 broker symbols", "symbols": found}
+        selected = [
+            {
+                "symbol": found[instrument][1],
+                "description": FOCUS_SYMBOL_LABELS[instrument],
+                "instrument": instrument,
+            }
+            for instrument in FOCUS_SYMBOL_ORDER
+            if instrument in found
+        ]
+        return {"connected": True, "source": "Selected MetaTrader 5 markets", "symbols": selected}
     finally:
         mt5.shutdown()
 
 
 @app.post("/api/analyze")
 def analyze(request: AnalysisRequest):
-    symbol = request.symbol.strip()
+    symbol = _require_focus_symbol(request.symbol)
     data = _market_rates(symbol, request.timeframe, request.count, request.shift)
     try:
         now = datetime.now(timezone.utc).timestamp()
@@ -675,6 +764,7 @@ def execute(request: ConfirmationRequest):
 
 @app.post("/api/paper-order")
 def paper_order(request: PaperOrderRequest):
+    _require_focus_symbol(request.symbol)
     if not request.confirmed:
         raise HTTPException(status_code=400, detail="Confirm the paper order before recording it.")
     if request.side == "buy" and not request.stop_loss < request.entry < request.take_profit:
