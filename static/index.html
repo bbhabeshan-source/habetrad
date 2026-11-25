@@ -137,9 +137,10 @@
             </div>
           </div>
           <div class="chart-wrap">
-            <canvas id="priceChart" aria-label="Historical candlestick chart"></canvas>
+            <canvas id="priceChart" aria-label="Interactive candlestick chart with volume and crosshair"></canvas>
           </div>
-          <div class="chart-help">DRAG TO PAN · SCROLL TO ZOOM · DOUBLE-CLICK TO RESET</div>
+          <div id="chartOhlc" class="chart-ohlc" aria-live="polite">O — H — L — C —</div>
+          <div class="chart-help">DRAG TO PAN · SCROLL TO ZOOM · HOVER FOR OHLC · DOUBLE-CLICK TO RESET</div>
           <div id="chartRange" class="chart-range">
             <span>HISTORICAL DATA NOT LOADED</span><span>—</span>
           </div>
