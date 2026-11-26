@@ -48,6 +48,20 @@ function showNotice(message) {
   notice.hidden = !message;
 }
 
+async function readApiJson(response) {
+  const body = await response.text();
+  try {
+    return JSON.parse(body);
+  } catch {
+    const preview = body.trim().replace(/\s+/g, " ").slice(0, 180);
+    const contentType = response.headers.get("content-type") || "unknown content type";
+    throw new Error(
+      `Server returned a non-JSON response (HTTP ${response.status}, ${contentType})`
+      + (preview ? `: ${preview}` : "."),
+    );
+  }
+}
+
 function formatPrice(value, digits = 2) {
   return Number.isFinite(value) ? Number(value).toFixed(digits) : "—";
 }
@@ -107,7 +121,7 @@ function friendlyConnectionMessage(reason) {
 async function loadStatus() {
   try {
     const response = await fetch("/api/status");
-    const data = await response.json();
+    const data = await readApiJson(response);
     isConnected = Boolean(data.mt5.connected);
     mt5ConnectionSupported = !String(data.mt5.reason || "")
       .toLowerCase()
@@ -151,7 +165,7 @@ async function refreshLiveQuote() {
     const timeframe = timeframeInput.value;
     const query = new URLSearchParams({ symbol, timeframe });
     const response = await fetch(`/api/quote?${query}`);
-    const data = await response.json();
+    const data = await readApiJson(response);
     if (requestAccountGeneration !== accountGeneration) return;
     if (!response.ok) throw new Error(data.detail || "Live quote unavailable.");
     if (symbol !== symbolInput.value.trim() || timeframe !== timeframeInput.value) return;
@@ -253,7 +267,7 @@ function updateActiveSymbol() {
 async function loadSymbols() {
   try {
     const response = await fetch("/api/symbols");
-    const data = await response.json();
+    const data = await readApiJson(response);
     if (!response.ok || !Array.isArray(data.symbols)) {
       throw new Error(data.detail || "The broker symbol list is unavailable.");
     }
@@ -289,7 +303,7 @@ async function connectAccount(event) {
         server: document.getElementById("mt5Server").value.trim(),
       }),
     });
-    const result = await response.json();
+    const result = await readApiJson(response);
     if (!response.ok) throw new Error(result.detail || "MT5 connection failed.");
     isSwitchingAccount = false;
     accountGeneration += 1;
@@ -743,7 +757,7 @@ async function analyze({ preserveViewport = false } = {}) {
         risk_percent: riskPercent,
       }),
     });
-    const data = await response.json();
+    const data = await readApiJson(response);
     if (requestAccountGeneration !== accountGeneration) return;
     if (!response.ok) throw new Error(data.detail || "Could not load market data.");
     renderAnalysis(data, preserveViewport);
@@ -797,7 +811,7 @@ async function submitProposal(proposal) {
         daily_loss_limit: Number(document.getElementById("dailyLossLimit").value),
       }),
     });
-    const result = await response.json();
+    const result = await readApiJson(response);
     if (!response.ok) throw new Error(result.detail || "Order was not submitted.");
     pendingProposals.delete(proposal.proposal_id);
     document.querySelector(`[data-proposal-id="${CSS.escape(proposal.proposal_id)}"]`)?.remove();
@@ -894,7 +908,7 @@ async function submitPaperOrder() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    const result = await response.json();
+    const result = await readApiJson(response);
     if (!response.ok) throw new Error(result.detail || "Paper order failed.");
     setValue("paperStatus", `${result.message} ${result.symbol} ${result.side.toUpperCase()} ${result.volume} lots.`);
     paperConfirm.checked = false;
