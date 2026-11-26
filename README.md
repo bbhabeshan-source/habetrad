@@ -1,4 +1,4 @@
-# Aurum Trading Terminal
+# hub Trading Terminal
 
 A neon-styled FastAPI market terminal for broker-provided forex pairs and XAUUSD.
 When MetaTrader 5 is authorized, it displays the broker's live bid/ask quote,
