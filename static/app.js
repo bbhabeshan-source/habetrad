@@ -4,6 +4,7 @@ let selectedSide = "buy";
 let visibleBars = 80;
 let chartStart = 0;
 let dragState = null;
+let chartPointer = null;
 let scanTimer = null;
 let scanInProgress = false;
 let scanRequested = false;
@@ -23,6 +24,7 @@ const symbolInput = document.getElementById("symbol");
 const timeframeInput = document.getElementById("timeframe");
 const notice = document.getElementById("dataNotice");
 const chart = document.getElementById("priceChart");
+const chartOhlc = document.getElementById("chartOhlc");
 const paperButton = document.getElementById("paperButton");
 const paperConfirm = document.getElementById("paperConfirm");
 const executionMode = document.getElementById("executionMode");
@@ -38,6 +40,7 @@ const focusMarketFallback = [
   { symbol: "GBPJPY", description: "GBP/JPY", instrument: "GBPJPY" },
   { symbol: "ETHUSD", description: "Ethereum", instrument: "ETHUSD" },
 ];
+const chartLayout = { left: 12, right: 84, top: 30, bottom: 22, volumeHeight: 48, axisGap: 12 };
 
 function showNotice(message) {
   notice.textContent = message;
@@ -504,14 +507,36 @@ function selectedStrategies() {
   return Array.from(document.querySelectorAll(".strategy-choice:checked"), (input) => input.value);
 }
 
+function formatChartTime(timestamp) {
+  const date = new Date(timestamp * 1000);
+  return timeframeInput.value.startsWith("D")
+    ? date.toLocaleDateString(undefined, { month: "short", day: "numeric" })
+    : date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+}
+
+function updateChartOhlc(bar, digits = 2) {
+  if (!bar) {
+    chartOhlc.textContent = "O —  H —  L —  C —";
+    chartOhlc.classList.remove("positive", "negative");
+    return;
+  }
+  chartOhlc.textContent = `O ${formatPrice(bar.open, digits)}  H ${formatPrice(bar.high, digits)}  `
+    + `L ${formatPrice(bar.low, digits)}  C ${formatPrice(bar.close, digits)}`;
+  chartOhlc.classList.toggle("positive", bar.close >= bar.open);
+  chartOhlc.classList.toggle("negative", bar.close < bar.open);
+}
+
 function drawChart() {
   const context = chart.getContext("2d");
   if (!context) return;
   const palette = getComputedStyle(document.documentElement);
+  const backgroundColor = palette.getPropertyValue("--panel").trim();
+  const raisedColor = palette.getPropertyValue("--panel-raised").trim();
   const mutedColor = palette.getPropertyValue("--muted").trim();
   const lineColor = palette.getPropertyValue("--line").trim();
   const greenColor = palette.getPropertyValue("--green").trim();
-  const vermilionColor = palette.getPropertyValue("--vermilion").trim();
+  const downColor = palette.getPropertyValue("--red").trim();
+  const crosshairColor = palette.getPropertyValue("--teal").trim();
 
   const bounds = chart.getBoundingClientRect();
   const ratio = window.devicePixelRatio || 1;
@@ -520,9 +545,11 @@ function drawChart() {
   context.scale(ratio, ratio);
   const width = bounds.width;
   const height = bounds.height;
-  context.clearRect(0, 0, width, height);
+  context.fillStyle = backgroundColor;
+  context.fillRect(0, 0, width, height);
 
   if (!marketData || marketData.bars.length === 0) {
+    updateChartOhlc(null);
     context.fillStyle = mutedColor;
     context.font = "12px Segoe UI";
     context.fillText("Historical candles appear here after MT5 connects.", 14, 25);
@@ -539,12 +566,13 @@ function drawChart() {
     }),
   );
   const digits = marketData.digits;
-  const left = 8;
-  const right = 76;
-  const top = 14;
-  const bottom = 10;
-  const plotWidth = width - left - right;
-  const plotHeight = height - top - bottom;
+  const { left, right, top, bottom, volumeHeight, axisGap } = chartLayout;
+  const plotWidth = Math.max(1, width - left - right);
+  const plotHeight = Math.max(1, height - top - bottom - volumeHeight - axisGap);
+  const plotRight = left + plotWidth;
+  const plotBottom = top + plotHeight;
+  const volumeTop = plotBottom + axisGap;
+  const volumeBottom = height - bottom;
   const high = Math.max(...bars.map((bar) => bar.high));
   const low = Math.min(...bars.map((bar) => bar.low));
   const padding = (high - low || Math.abs(high) * 0.001 || 1) * 0.08;
@@ -552,6 +580,18 @@ function drawChart() {
   const minPrice = low - padding;
   const priceY = (price) => top + (maxPrice - price) / (maxPrice - minPrice) * plotHeight;
   const step = plotWidth / bars.length;
+
+  context.fillStyle = raisedColor;
+  context.fillRect(width - right, 0, right, height);
+  context.strokeStyle = lineColor;
+  context.beginPath();
+  context.moveTo(plotRight, 0);
+  context.lineTo(plotRight, height);
+  context.moveTo(left, volumeTop);
+  context.lineTo(plotRight, volumeTop);
+  context.moveTo(left, volumeBottom);
+  context.lineTo(width, volumeBottom);
+  context.stroke();
 
   context.font = "9px ui-monospace, Consolas, monospace";
   context.textAlign = "right";
@@ -561,17 +601,18 @@ function drawChart() {
     context.strokeStyle = lineColor;
     context.beginPath();
     context.moveTo(left, y);
-    context.lineTo(left + plotWidth, y);
+    context.lineTo(plotRight, y);
     context.stroke();
     context.fillStyle = mutedColor;
     context.fillText(price.toFixed(digits), width - 4, y + 3);
   }
 
+  const maxVolume = Math.max(1, ...bars.map((bar) => Number(bar.tick_volume) || 0));
   bars.forEach((bar, index) => {
     const x = left + index * step + step / 2;
-    const candleWidth = Math.max(1, Math.min(9, step * 0.62));
+    const candleWidth = Math.max(1, Math.min(9, step * 0.68));
     const rising = bar.close >= bar.open;
-    const color = rising ? greenColor : vermilionColor;
+    const color = rising ? greenColor : downColor;
     context.strokeStyle = color;
     context.fillStyle = color;
     context.lineWidth = Math.max(1, Math.min(2, step * 0.15));
@@ -582,7 +623,24 @@ function drawChart() {
     const openY = priceY(bar.open);
     const closeY = priceY(bar.close);
     context.fillRect(x - candleWidth / 2, Math.min(openY, closeY), candleWidth, Math.max(1, Math.abs(closeY - openY)));
+    const volume = Math.max(0, Number(bar.tick_volume) || 0);
+    const volumeBarHeight = (volume / maxVolume) * (volumeHeight - 14);
+    context.globalAlpha = 0.62;
+    context.fillRect(x - candleWidth / 2, volumeBottom - volumeBarHeight, candleWidth, volumeBarHeight);
+    context.globalAlpha = 1;
   });
+  context.fillStyle = mutedColor;
+  context.textAlign = "left";
+  context.fillText("VOLUME", left + 4, volumeTop + 11);
+
+  const timeIndexes = [...new Set([0, ...[0.25, 0.5, 0.75, 1].map((ratio) => Math.round((bars.length - 1) * ratio))])];
+  context.textAlign = "center";
+  timeIndexes.forEach((index) => {
+    const x = left + index * step + step / 2;
+    context.fillStyle = mutedColor;
+    context.fillText(formatChartTime(bars[index].time), x, height - 5);
+  });
+
   const liveBid = marketData.quote?.bid;
   if (Number.isFinite(liveBid) && liveBid >= minPrice && liveBid <= maxPrice) {
     const y = priceY(liveBid);
@@ -591,12 +649,52 @@ function drawChart() {
     context.strokeStyle = greenColor;
     context.beginPath();
     context.moveTo(left, y);
-    context.lineTo(left + plotWidth, y);
+    context.lineTo(plotRight, y);
     context.stroke();
     context.setLineDash([]);
     context.fillStyle = greenColor;
+    context.fillRect(width - right + 3, y - 9, right - 6, 18);
+    context.fillStyle = backgroundColor;
     context.textAlign = "right";
-    context.fillText(`LIVE ${formatPrice(liveBid, digits)}`, left + plotWidth - 4, y - 4);
+    context.fillText(formatPrice(liveBid, digits), width - 7, y + 3);
+    context.restore();
+  }
+
+  let selectedIndex = bars.length - 1;
+  if (chartPointer && chartPointer.x >= left && chartPointer.x <= plotRight) {
+    selectedIndex = Math.max(0, Math.min(bars.length - 1, Math.floor((chartPointer.x - left) / step)));
+  }
+  updateChartOhlc(bars[selectedIndex], digits);
+
+  if (chartPointer && chartPointer.x >= left && chartPointer.x <= plotRight) {
+    const x = chartPointer.x;
+    context.save();
+    context.setLineDash([3, 4]);
+    context.strokeStyle = crosshairColor;
+    context.beginPath();
+    context.moveTo(x, top);
+    context.lineTo(x, volumeBottom);
+    if (chartPointer.y >= top && chartPointer.y <= plotBottom) {
+      context.moveTo(left, chartPointer.y);
+      context.lineTo(width - right, chartPointer.y);
+      const crosshairPrice = maxPrice - ((chartPointer.y - top) / plotHeight) * (maxPrice - minPrice);
+      context.setLineDash([]);
+      context.fillStyle = crosshairColor;
+      context.fillRect(width - right + 3, chartPointer.y - 9, right - 6, 18);
+      context.fillStyle = backgroundColor;
+      context.textAlign = "right";
+      context.fillText(crosshairPrice.toFixed(digits), width - 7, chartPointer.y + 3);
+    }
+    context.stroke();
+    context.setLineDash([]);
+    const timeLabel = formatChartTime(bars[selectedIndex].time);
+    context.font = "9px ui-monospace, Consolas, monospace";
+    context.textAlign = "center";
+    const labelX = Math.max(left + 38, Math.min(plotRight - 38, x));
+    context.fillStyle = crosshairColor;
+    context.fillRect(labelX - 38, height - 19, 76, 16);
+    context.fillStyle = backgroundColor;
+    context.fillText(timeLabel, labelX, height - 8);
     context.restore();
   }
 }
@@ -619,7 +717,7 @@ function setVisibleBars(nextCount, anchorRatio = 0.5) {
 
 function panChart(deltaPixels) {
   if (!marketData || !dragState) return;
-  const plotWidth = Math.max(1, chart.getBoundingClientRect().width - 84);
+  const plotWidth = Math.max(1, chart.getBoundingClientRect().width - chartLayout.left - chartLayout.right);
   const shift = Math.round((deltaPixels / plotWidth) * visibleBars);
   chartStart = Math.max(0, Math.min(marketData.bars.length - visibleBars, dragState.start - shift));
   setValue("barCount", `${visibleBars} VISIBLE`);
@@ -863,28 +961,44 @@ document.getElementById("resetChart").addEventListener("click", () => {
 document.getElementById("botToggle").addEventListener("click", toggleBot);
 executionPolicy.addEventListener("change", syncExecutionPolicy);
 chart.addEventListener("pointerdown", (event) => {
-  if (!marketData) return;
+  if (!marketData || event.button !== 0) return;
   chart.setPointerCapture(event.pointerId);
+  chartPointer = { x: event.offsetX, y: event.offsetY };
   dragState = { x: event.clientX, start: chartStart };
   chart.classList.add("dragging");
 });
 chart.addEventListener("pointermove", (event) => {
-  if (!dragState) return;
-  panChart(event.clientX - dragState.x);
+  chartPointer = { x: event.offsetX, y: event.offsetY };
+  if (dragState) panChart(event.clientX - dragState.x);
+  else drawChart();
 });
 chart.addEventListener("pointerup", () => {
   dragState = null;
   chart.classList.remove("dragging");
+  drawChart();
 });
 chart.addEventListener("pointercancel", () => {
   dragState = null;
   chart.classList.remove("dragging");
+  drawChart();
+});
+chart.addEventListener("pointerleave", () => {
+  if (dragState) return;
+  chartPointer = null;
+  drawChart();
 });
 chart.addEventListener("wheel", (event) => {
   if (!marketData) return;
   event.preventDefault();
   const bounds = chart.getBoundingClientRect();
-  const ratio = Math.max(0, Math.min(1, (event.clientX - bounds.left - 8) / Math.max(1, bounds.width - 84)));
+  const ratio = Math.max(
+    0,
+    Math.min(
+      1,
+      (event.clientX - bounds.left - chartLayout.left)
+        / Math.max(1, bounds.width - chartLayout.left - chartLayout.right),
+    ),
+  );
   const factor = event.deltaY < 0 ? 0.8 : 1.25;
   setVisibleBars(visibleBars * factor, ratio);
 }, { passive: false });
