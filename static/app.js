@@ -11,6 +11,7 @@ let scanInProgress = false;
 let scanRequested = false;
 let quoteInProgress = false;
 let orderInProgress = false;
+let executionStatusMessage = "";
 let connectedTradeMode = null;
 let isSwitchingAccount = false;
 let accountGeneration = 0;
@@ -372,7 +373,7 @@ function renderAnalysis(data, preserveViewport = false) {
     `20 BAR HIGH / LOW: ${formatPrice(indicators.range20_high, digits)} / ${formatPrice(indicators.range20_low, digits)}`,
   );
   setValue("newsValue", data.news.message);
-  setValue("tradeStatus", data.trade_status);
+  setValue("tradeStatus", executionStatusMessage || data.trade_status);
   setValue(
     "accountBadge",
     `${String(data.account.trade_mode || "ACCOUNT").toUpperCase()} · ${data.account.equity} ${data.account.currency}`,
@@ -471,6 +472,7 @@ function renderProposals(proposals, data) {
 function clearPendingProposals(message = "Account changed. Run analysis for fresh proposals.") {
   pendingProposals.clear();
   seenSignalKeys.clear();
+  executionStatusMessage = "";
   const list = document.getElementById("proposalsList");
   if (list) {
     const note = document.createElement("p");
@@ -771,12 +773,16 @@ async function analyze({ preserveViewport = false } = {}) {
 async function submitProposal(proposal) {
   const mode = executionMode.value;
   if (mode !== "paper" && mode !== connectedTradeMode) {
-    showNotice(`Your MT5 account is ${connectedTradeMode || "not identified"}. Select the matching order mode.`);
+    executionStatusMessage = `Order not submitted: your MT5 account is ${connectedTradeMode || "not identified"}. Select the matching order mode.`;
+    setValue("tradeStatus", executionStatusMessage);
+    showNotice(executionStatusMessage);
     return;
   }
 
   if (orderInProgress) return;
   orderInProgress = true;
+  executionStatusMessage = "Approval received. Validating order with MT5…";
+  setValue("tradeStatus", executionStatusMessage);
   const button = document.querySelector(`[data-proposal-id="${CSS.escape(proposal.proposal_id)}"] .proposal-approve`);
   if (button) button.disabled = true;
   try {
@@ -796,10 +802,13 @@ async function submitProposal(proposal) {
     pendingProposals.delete(proposal.proposal_id);
     document.querySelector(`[data-proposal-id="${CSS.escape(proposal.proposal_id)}"]`)?.remove();
     setValue("proposalCount", String(pendingProposals.size));
-    setValue("tradeStatus", result.message);
+    executionStatusMessage = result.message;
+    setValue("tradeStatus", executionStatusMessage);
     setValue("paperStatus", `${result.message} ${result.symbol} ${result.side.toUpperCase()} ${result.volume} lots.`);
   } catch (error) {
     if (button) button.disabled = false;
+    executionStatusMessage = `Order not submitted: ${error.message}`;
+    setValue("tradeStatus", executionStatusMessage);
     showNotice(error.message);
   } finally {
     orderInProgress = false;
@@ -815,7 +824,10 @@ function toggleBot() {
     button.textContent = "START SCANNING";
     button.classList.remove("running");
     status.textContent = "STOPPED";
-    setValue("tradeStatus", "Scanner stopped. Pending proposals remain available for your approval.");
+    setValue(
+      "tradeStatus",
+      executionStatusMessage || "Scanner stopped. Pending proposals remain available for your approval.",
+    );
     return;
   }
   if (isSwitchingAccount) {
