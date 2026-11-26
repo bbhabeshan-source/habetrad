@@ -67,25 +67,21 @@ estimates volume from the connected account's equity, the selected per-order
 risk (configurable from 1% to 100%), and broker tick/volume settings. The
 proposal shows estimated risk alongside the selected cap. The separate daily
 loss stop remains capped at 5%; very high per-order risk can therefore be
-blocked by that stop. The selected execution policy can require
-confirmation for every order or automatically submit eligible orders while the
-scanner is running on an MT5 demo account. Automatic submission is rejected for
-live accounts; live orders require per-order confirmation. Paper mode only
-simulates the order.
+blocked by that stop. Scanning only displays analysis and proposals; it never
+submits an order automatically. Every proposal requires the user to click
+**Approve & Trade**. Demo submissions are limited to six open positions, and
+live orders also require individual approval. Paper mode only simulates the
+order.
 If the broker's minimum lot would exceed the selected risk cap, the app explains
 the estimated minimum-lot risk and does not create an order.
 MT5 demo/live submissions require the selected mode to match the connected
 account, and the server checks quote drift, proposal age, equity changes, and
-the daily realized-loss limit plus the proposed order's estimated risk. Automatic
-demo orders are deduplicated by symbol, timeframe, and candle, so repeated scans
-won't submit the same setup more than once, and only one open position is
-allowed for automatic demo trading. These checks reduce some risks but
+the daily realized-loss limit plus the proposed order's estimated risk. Demo
+submissions are serialized and limited to six open positions. These checks reduce some risks but
 do not guarantee a maximum loss: gaps, slippage,
 broker execution, currency conversion, and other open positions can change the
 result. Test in paper or demo mode before considering any live order.
 
-Automatic demo submission runs only while scanning and only when an order fits
-the configured risk controls. The scanner only monitors the currently selected
-symbol and timeframe; it does not fetch calendar news or guarantee detection of
-every market condition. Keep the app bound to localhost and do not expose its
-order endpoint publicly.
+The scanner only monitors the currently selected symbol and timeframe; it does
+not fetch calendar news or guarantee detection of every market condition. Keep
+the app bound to localhost and do not expose its order endpoint publicly.
