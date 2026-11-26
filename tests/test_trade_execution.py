@@ -112,7 +112,12 @@ class TradeExecutionTests(unittest.TestCase):
         mt5.ORDER_TYPE_SELL = 1
         mt5.TRADE_ACTION_DEAL = 1
         mt5.ORDER_TIME_GTC = 0
+        mt5.SYMBOL_FILLING_IOC = 2
+        mt5.SYMBOL_FILLING_FOK = 1
+        mt5.SYMBOL_TRADE_EXECUTION_MARKET = 2
         mt5.ORDER_FILLING_IOC = 1
+        mt5.ORDER_FILLING_FOK = 0
+        mt5.ORDER_FILLING_RETURN = 2
         mt5.TRADE_RETCODE_DONE = 10009
         mt5.TRADE_RETCODE_PLACED = 10008
         mt5.account_info.return_value = SimpleNamespace(
@@ -120,10 +125,15 @@ class TradeExecutionTests(unittest.TestCase):
             trade_mode=0,
             equity=10000,
         )
-        mt5.symbol_info.return_value = SimpleNamespace(visible=True)
+        mt5.symbol_info.return_value = SimpleNamespace(
+            visible=True,
+            filling_mode=3,
+            trade_exemode=2,
+        )
         mt5.symbol_info_tick.return_value = SimpleNamespace(bid=1.1, ask=1.1001)
         mt5.history_deals_get.return_value = []
         mt5.positions_get.return_value = []
+        mt5.order_check.return_value = SimpleNamespace(retcode=0, comment="Done")
         mt5.order_send.return_value = SimpleNamespace(retcode=10009, order=123, deal=456)
 
         proposal = dict(app.state.proposals[self.proposal_id])
@@ -149,8 +159,154 @@ class TradeExecutionTests(unittest.TestCase):
         self.assertEqual(result["status"], "broker_order_submitted")
         self.assertIn("automatically submitted", result["message"])
         self.assertEqual(error.exception.status_code, 409)
+        mt5.order_check.assert_called_once()
         mt5.order_send.assert_called_once()
+        self.assertEqual(
+            mt5.order_check.call_args.args[0]["type_filling"],
+            mt5.ORDER_FILLING_IOC,
+        )
+        self.assertEqual(
+            mt5.order_send.call_args.args[0]["type_filling"],
+            mt5.ORDER_FILLING_IOC,
+        )
         self.assertEqual(mt5.shutdown.call_count, 2)
+
+    def test_broker_order_check_rejection_is_reported_without_sending(self):
+        mt5 = Mock()
+        mt5.ACCOUNT_TRADE_MODE_DEMO = 0
+        mt5.ACCOUNT_TRADE_MODE_REAL = 2
+        mt5.ORDER_TYPE_BUY = 0
+        mt5.ORDER_TYPE_SELL = 1
+        mt5.TRADE_ACTION_DEAL = 1
+        mt5.ORDER_TIME_GTC = 0
+        mt5.SYMBOL_FILLING_IOC = 2
+        mt5.SYMBOL_FILLING_FOK = 1
+        mt5.SYMBOL_TRADE_EXECUTION_MARKET = 2
+        mt5.ORDER_FILLING_IOC = 1
+        mt5.ORDER_FILLING_FOK = 0
+        mt5.ORDER_FILLING_RETURN = 2
+        mt5.account_info.return_value = SimpleNamespace(
+            login=42,
+            trade_mode=0,
+            equity=10000,
+        )
+        mt5.symbol_info.return_value = SimpleNamespace(
+            visible=True,
+            filling_mode=3,
+            trade_exemode=2,
+        )
+        mt5.symbol_info_tick.return_value = SimpleNamespace(bid=1.1, ask=1.1001)
+        mt5.history_deals_get.return_value = []
+        mt5.order_check.return_value = SimpleNamespace(retcode=10016, comment="Invalid stops")
+
+        with patch("app._mt5", return_value=mt5):
+            with self.assertRaises(HTTPException) as error:
+                execute(ConfirmationRequest(
+                    proposal_id=self.proposal_id,
+                    mode="demo",
+                    confirmed=True,
+                ))
+
+        self.assertEqual(error.exception.status_code, 422)
+        self.assertIn("retcode 10016: Invalid stops", error.exception.detail)
+        self.assertIn("no order was submitted", error.exception.detail)
+        mt5.order_check.assert_called_once()
+        mt5.order_send.assert_not_called()
+        mt5.shutdown.assert_called_once()
+
+    def test_manual_demo_approval_checks_then_submits_with_supported_fok(self):
+        mt5 = Mock()
+        mt5.ACCOUNT_TRADE_MODE_DEMO = 0
+        mt5.ACCOUNT_TRADE_MODE_REAL = 2
+        mt5.ORDER_TYPE_BUY = 0
+        mt5.ORDER_TYPE_SELL = 1
+        mt5.TRADE_ACTION_DEAL = 1
+        mt5.ORDER_TIME_GTC = 0
+        mt5.SYMBOL_FILLING_IOC = 2
+        mt5.SYMBOL_FILLING_FOK = 1
+        mt5.SYMBOL_TRADE_EXECUTION_MARKET = 2
+        mt5.ORDER_FILLING_IOC = 1
+        mt5.ORDER_FILLING_FOK = 0
+        mt5.ORDER_FILLING_RETURN = 2
+        mt5.TRADE_RETCODE_DONE = 10009
+        mt5.TRADE_RETCODE_PLACED = 10008
+        mt5.account_info.return_value = SimpleNamespace(
+            login=42,
+            trade_mode=0,
+            equity=10000,
+        )
+        mt5.symbol_info.return_value = SimpleNamespace(
+            visible=True,
+            filling_mode=mt5.SYMBOL_FILLING_FOK,
+            trade_exemode=mt5.SYMBOL_TRADE_EXECUTION_MARKET,
+        )
+        mt5.symbol_info_tick.return_value = SimpleNamespace(bid=1.1, ask=1.1001)
+        mt5.history_deals_get.return_value = []
+        mt5.order_check.return_value = SimpleNamespace(retcode=0, comment="Done")
+        mt5.order_send.return_value = SimpleNamespace(retcode=10009, order=123, deal=456)
+
+        with patch("app._mt5", return_value=mt5):
+            result = execute(ConfirmationRequest(
+                proposal_id=self.proposal_id,
+                mode="demo",
+                confirmed=True,
+            ))
+
+        self.assertEqual(result["status"], "broker_order_submitted")
+        mt5.order_check.assert_called_once()
+        mt5.order_send.assert_called_once()
+        self.assertEqual(
+            mt5.order_check.call_args.args[0]["type_filling"],
+            mt5.ORDER_FILLING_FOK,
+        )
+        self.assertEqual(
+            mt5.order_send.call_args.args[0]["type_filling"],
+            mt5.ORDER_FILLING_FOK,
+        )
+        mt5.shutdown.assert_called_once()
+
+    def test_order_check_none_reports_terminal_error_without_sending(self):
+        mt5 = Mock()
+        mt5.ACCOUNT_TRADE_MODE_DEMO = 0
+        mt5.ACCOUNT_TRADE_MODE_REAL = 2
+        mt5.ORDER_TYPE_BUY = 0
+        mt5.ORDER_TYPE_SELL = 1
+        mt5.TRADE_ACTION_DEAL = 1
+        mt5.ORDER_TIME_GTC = 0
+        mt5.SYMBOL_FILLING_IOC = 2
+        mt5.SYMBOL_FILLING_FOK = 1
+        mt5.SYMBOL_TRADE_EXECUTION_MARKET = 2
+        mt5.ORDER_FILLING_IOC = 1
+        mt5.ORDER_FILLING_FOK = 0
+        mt5.ORDER_FILLING_RETURN = 2
+        mt5.account_info.return_value = SimpleNamespace(
+            login=42,
+            trade_mode=0,
+            equity=10000,
+        )
+        mt5.symbol_info.return_value = SimpleNamespace(
+            visible=True,
+            filling_mode=3,
+            trade_exemode=2,
+        )
+        mt5.symbol_info_tick.return_value = SimpleNamespace(bid=1.1, ask=1.1001)
+        mt5.history_deals_get.return_value = []
+        mt5.order_check.return_value = None
+        mt5.last_error.return_value = (-2, "Terminal failure")
+
+        with patch("app._mt5", return_value=mt5):
+            with self.assertRaises(HTTPException) as error:
+                execute(ConfirmationRequest(
+                    proposal_id=self.proposal_id,
+                    mode="demo",
+                    confirmed=True,
+                ))
+
+        self.assertEqual(error.exception.status_code, 502)
+        self.assertIn("Terminal failure", error.exception.detail)
+        self.assertIn("no order was submitted", error.exception.detail)
+        mt5.order_send.assert_not_called()
+        mt5.shutdown.assert_called_once()
 
     def test_automatic_live_submission_is_rejected_before_mt5_access(self):
         with patch("app._mt5") as get_mt5:

@@ -1,3 +1,4 @@
+import logging
 import os
 import threading
 import uuid
@@ -14,6 +15,7 @@ from pydantic import BaseModel, Field
 from trading import STRATEGIES, generate_signals
 
 APP_DIR = Path(__file__).resolve().parent
+logger = logging.getLogger(__name__)
 TIMEFRAME_NAMES = (
     "M1", "M2", "M3", "M4", "M5", "M6", "M10", "M12", "M15",
     "M20", "M30", "H1", "H2", "H3", "H4", "H6", "H8", "H12", "D1",
@@ -717,7 +719,26 @@ def execute(request: ConfirmationRequest):
                 app.state.auto_demo_attempts[signal_key] = datetime.now(timezone.utc).timestamp() + 300
 
         order_type = mt5.ORDER_TYPE_BUY if proposal["side"] == "buy" else mt5.ORDER_TYPE_SELL
-        result = mt5.order_send({
+        filling_flags = getattr(symbol_info, "filling_mode", None)
+        execution_mode = getattr(symbol_info, "trade_exemode", None)
+        if filling_flags is None or execution_mode is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Broker order-filling settings are unavailable; order not submitted.",
+            )
+        if filling_flags & mt5.SYMBOL_FILLING_IOC:
+            filling_mode = mt5.ORDER_FILLING_IOC
+        elif filling_flags & mt5.SYMBOL_FILLING_FOK:
+            filling_mode = mt5.ORDER_FILLING_FOK
+        elif execution_mode != mt5.SYMBOL_TRADE_EXECUTION_MARKET:
+            filling_mode = mt5.ORDER_FILLING_RETURN
+        else:
+            raise HTTPException(
+                status_code=422,
+                detail="Broker does not allow a supported fill policy for this symbol; order not submitted.",
+            )
+
+        order_request = {
             "action": mt5.TRADE_ACTION_DEAL,
             "symbol": proposal["symbol"],
             "volume": proposal["volume"],
@@ -729,13 +750,61 @@ def execute(request: ConfirmationRequest):
             "magic": 20261125,
             "comment": proposal["strategy"][:31],
             "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC,
-        })
-        if result is None or result.retcode not in (
-            mt5.TRADE_RETCODE_DONE,
-            mt5.TRADE_RETCODE_PLACED,
-        ):
-            raise HTTPException(status_code=502, detail=f"Broker rejected order: {result}")
+            "type_filling": filling_mode,
+        }
+        check = mt5.order_check(order_request)
+        if check is None:
+            terminal_error = mt5.last_error()
+            logger.warning(
+                "MT5 order check failed for %s before submission: %s",
+                proposal["symbol"],
+                terminal_error,
+            )
+            raise HTTPException(
+                status_code=502,
+                detail=f"MT5 could not validate the order ({terminal_error}); no order was submitted.",
+            )
+        if check.retcode != 0:
+            logger.warning(
+                "MT5 order check rejected %s before submission: retcode=%s comment=%s",
+                proposal["symbol"],
+                check.retcode,
+                check.comment,
+            )
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"MT5 order check rejected the order (retcode {check.retcode}: "
+                    f"{check.comment}); no order was submitted."
+                ),
+            )
+
+        result = mt5.order_send(order_request)
+        if result is None:
+            terminal_error = mt5.last_error()
+            logger.warning(
+                "MT5 order submission returned no result for %s: %s",
+                proposal["symbol"],
+                terminal_error,
+            )
+            raise HTTPException(
+                status_code=502,
+                detail=f"MT5 returned no result for the order ({terminal_error}); check the MT5 terminal before retrying.",
+            )
+        if result.retcode not in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
+            logger.warning(
+                "MT5 rejected submitted order for %s: retcode=%s comment=%s",
+                proposal["symbol"],
+                result.retcode,
+                result.comment,
+            )
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    f"MT5 rejected the order (retcode {result.retcode}: {result.comment}). "
+                    "Check the MT5 terminal history before retrying."
+                ),
+            )
 
         app.state.proposals.pop(request.proposal_id, None)
         return {
