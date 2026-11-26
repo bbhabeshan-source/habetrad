@@ -1,5 +1,6 @@
 let marketData = null;
 let isConnected = false;
+let mt5ConnectionSupported = false;
 let selectedSide = "buy";
 let visibleBars = 80;
 let chartStart = 0;
@@ -66,7 +67,7 @@ function setValue(id, value) {
 }
 
 function syncConnectionControls() {
-  connectForm.hidden = isConnected && !isSwitchingAccount;
+  connectForm.hidden = !mt5ConnectionSupported || (isConnected && !isSwitchingAccount);
   switchAccountButton.hidden = !isConnected || isSwitchingAccount;
   cancelConnectButton.hidden = !isConnected;
   document.getElementById("connectTitle").textContent = isConnected
@@ -108,6 +109,9 @@ async function loadStatus() {
     const response = await fetch("/api/status");
     const data = await response.json();
     isConnected = Boolean(data.mt5.connected);
+    mt5ConnectionSupported = !String(data.mt5.reason || "")
+      .toLowerCase()
+      .includes("metatrader5 is unavailable on this server");
     connectedTradeMode = data.mt5.trade_mode || null;
     if (isConnected && ["demo", "live"].includes(connectedTradeMode)) {
       accountTypeInput.value = connectedTradeMode;
@@ -130,6 +134,7 @@ async function loadStatus() {
     else showNotice("");
   } catch {
     isConnected = false;
+    mt5ConnectionSupported = false;
     connectedTradeMode = null;
     syncExecutionPolicy();
     syncConnectionControls();
