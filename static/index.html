@@ -186,9 +186,9 @@
                 <option value="live">MT5 live account</option>
               </select>
             </label>
-            <label>Execution approval
+            <label>Demo execution
               <select id="executionPolicy">
-                <option value="auto_demo" selected>Auto-submit eligible demo orders</option>
+                <option value="auto_demo" selected>Auto-trade demo (no per-trade approval)</option>
                 <option value="manual">Confirm every order</option>
               </select>
             </label>
@@ -213,7 +213,7 @@
             <label><input class="strategy-choice" type="checkbox" value="structure_break" checked> Swing break of structure</label>
             <label><input class="strategy-choice" type="checkbox" value="ict_price_action" checked> ICT-inspired sweep + gap</label>
           </div>
-          <p class="bot-disclaimer">Rules are simplified and unvalidated; ICT-inspired logic is not a full ICT system. Set per-order risk from 1% to 100%; a 100% cap can expose the full account, and the separate daily-loss stop can still block an order. Auto-submit runs only while scanning, only on an MT5 demo account, only when minimum size fits your risk cap, and only with one open position at a time. It never auto-submits live orders. No strategy guarantees returns.</p>
+          <p class="bot-disclaimer">Rules are simplified and unvalidated; ICT-inspired logic is not a full ICT system. Set per-order risk from 1% to 100%; a 100% cap can expose the full account, and the separate daily-loss stop can still block an order. Auto-trading runs only while scanning, only on an MT5 demo account, only when minimum size fits your risk cap, and is capped at six open positions with duplicate-signal checks. Live orders always require your approval. No strategy guarantees returns.</p>
         </article>
 
         <article class="panel proposals-panel">

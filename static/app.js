@@ -147,10 +147,10 @@ async function loadStatus() {
 function syncExecutionPolicy() {
   const autoDemoOption = executionPolicy.querySelector('option[value="auto_demo"]');
   autoDemoOption.disabled = connectedTradeMode !== "demo";
-  if (autoDemoOption.disabled && executionPolicy.value === "auto_demo") {
+  if (connectedTradeMode === "live" && executionPolicy.value === "auto_demo") {
     executionPolicy.value = "manual";
   }
-  const autoDemo = executionPolicy.value === "auto_demo";
+  const autoDemo = executionPolicy.value === "auto_demo" && connectedTradeMode === "demo";
   executionMode.disabled = autoDemo;
   if (autoDemo) executionMode.value = "demo";
 }
@@ -461,19 +461,27 @@ function renderProposals(proposals, data) {
     const approve = document.createElement("button");
     approve.type = "button";
     approve.className = "proposal-approve";
-    const shouldAutoDemo = Boolean(scanTimer)
-      && executionPolicy.value === "auto_demo"
+    const autoDemoSelected = executionPolicy.value === "auto_demo"
       && connectedTradeMode === "demo"
       && isConnected;
+    const shouldAutoDemo = Boolean(scanTimer) && autoDemoSelected;
     const autoDemo = shouldAutoDemo && !autoAttemptSelected;
     if (autoDemo) autoAttemptSelected = true;
     approve.textContent = autoDemo
       ? "AUTO-SUBMITTING…"
       : shouldAutoDemo
         ? "ONE AUTO ORDER PER SCAN"
-        : "REVIEW & APPROVE";
-    approve.disabled = shouldAutoDemo;
-    approve.addEventListener("click", () => submitProposal(proposal));
+        : autoDemoSelected
+          ? "START SCANNING FOR AUTO-TRADING"
+          : "REVIEW & APPROVE";
+    approve.disabled = autoDemoSelected;
+    approve.addEventListener("click", () => {
+      if (executionPolicy.value === "auto_demo") {
+        showNotice("Start scanning to submit eligible demo orders automatically, without individual approvals.");
+        return;
+      }
+      submitProposal(proposal);
+    });
     card.appendChild(approve);
     list.querySelector(".empty-note")?.remove();
     list.prepend(card);
@@ -495,14 +503,14 @@ function renderProposals(proposals, data) {
   setValue("proposalCount", String(pendingProposals.size));
 }
 
-function clearPendingProposals() {
+function clearPendingProposals(message = "Account changed. Run analysis for fresh proposals.") {
   pendingProposals.clear();
   seenSignalKeys.clear();
   const list = document.getElementById("proposalsList");
   if (list) {
     const note = document.createElement("p");
     note.className = "empty-note";
-    note.textContent = "Account changed. Run analysis for fresh proposals.";
+    note.textContent = message;
     list.replaceChildren(note);
   }
   setValue("proposalCount", "0");
@@ -841,8 +849,8 @@ async function submitProposal(proposal, autoDemo = false) {
     setValue("paperStatus", `${result.message} ${result.symbol} ${result.side.toUpperCase()} ${result.volume} lots.`);
   } catch (error) {
     if (button) {
-      button.disabled = false;
-      if (autoDemo) button.textContent = "REVIEW & APPROVE";
+      button.disabled = autoDemo;
+      if (autoDemo) button.textContent = "AUTO-SUBMIT BLOCKED · CHECK MESSAGE";
     }
     showNotice(error.message);
   } finally {
@@ -859,7 +867,12 @@ function toggleBot() {
     button.textContent = "START SCANNING";
     button.classList.remove("running");
     status.textContent = "STOPPED";
-    setValue("tradeStatus", "Scanner stopped. Pending proposals remain available for review.");
+    setValue(
+      "tradeStatus",
+      executionPolicy.value === "auto_demo"
+        ? "Auto-demo scanner stopped. No further orders will be submitted until scanning resumes."
+        : "Scanner stopped. Pending proposals remain available for review.",
+    );
     return;
   }
   if (isSwitchingAccount) {
@@ -878,7 +891,16 @@ function toggleBot() {
   button.textContent = "STOP SCANNING";
   button.classList.add("running");
   status.textContent = "SCANNING · 15S";
-  setValue("tradeStatus", "Scanner running for the selected pair and timeframe. Orders still require your approval.");
+  const autoDemo = executionPolicy.value === "auto_demo" && connectedTradeMode === "demo";
+  if (autoDemo) {
+    clearPendingProposals("Auto-demo scanner started. Checking for a fresh eligible setup.");
+  }
+  setValue(
+    "tradeStatus",
+    autoDemo
+      ? "Auto-demo is active: qualifying orders submit without individual approval. Stop scanning to pause."
+      : "Scanner running. New orders will wait for your individual approval.",
+  );
   analyze({ preserveViewport: true });
 }
 
