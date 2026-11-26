@@ -120,7 +120,11 @@ def _mt5(credentials_override=None):
     except ImportError as exc:
         raise HTTPException(
             status_code=503,
-            detail="MetaTrader5 is unavailable. Install requirements and run the MT5 terminal.",
+            detail=(
+                "MetaTrader5 is unavailable on this server. Run the app on Windows "
+                "with the MT5 desktop terminal installed; Linux hosting cannot access "
+                "a terminal running on your computer."
+            ),
         ) from exc
 
     credentials = credentials_override or app.state.mt5_credentials or (
@@ -360,13 +364,7 @@ def live_quote(symbol: str, timeframe: str):
 @app.post("/api/connect")
 def connect_mt5(request: MT5ConnectRequest):
     credentials = (request.login, request.password, request.server)
-    try:
-        mt5 = _mt5(credentials)
-    except HTTPException as error:
-        raise HTTPException(
-            status_code=401,
-            detail="MT5 rejected the connection. Check the account number, password, broker server, and terminal path.",
-        ) from error
+    mt5 = _mt5(credentials)
 
     try:
         account = mt5.account_info()

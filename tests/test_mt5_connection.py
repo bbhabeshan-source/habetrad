@@ -134,9 +134,27 @@ class MT5ConnectionTests(unittest.TestCase):
             with self.assertRaises(HTTPException) as error:
                 connect_mt5(credentials)
 
-        self.assertEqual(error.exception.status_code, 401)
+        self.assertEqual(error.exception.status_code, 503)
+        self.assertIn("Authorization failed", error.exception.detail)
+        self.assertNotIn("Check the account number", error.exception.detail)
         self.assertIsNone(app.state.mt5_credentials)
         fake_mt5.shutdown.assert_called_once()
+
+    def test_missing_mt5_package_reports_server_limitation(self):
+        credentials = MT5ConnectRequest(
+            account_type="demo",
+            login=12345,
+            password="secret",
+            server="Broker-Demo",
+        )
+
+        with patch.dict(sys.modules, {"MetaTrader5": None}):
+            with self.assertRaises(HTTPException) as error:
+                connect_mt5(credentials)
+
+        self.assertEqual(error.exception.status_code, 503)
+        self.assertIn("MetaTrader5 is unavailable on this server", error.exception.detail)
+        self.assertIn("Linux hosting cannot access", error.exception.detail)
 
 
 if __name__ == "__main__":
