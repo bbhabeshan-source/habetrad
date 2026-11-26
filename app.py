@@ -21,6 +21,7 @@ TIMEFRAME_NAMES = (
     "M20", "M30", "H1", "H2", "H3", "H4", "H6", "H8", "H12", "D1",
 )
 FOCUS_SYMBOL_ORDER = ("XAUUSD", "BTCUSD", "GBPUSD", "EURUSD", "GBPJPY", "ETHUSD")
+MAX_AUTO_DEMO_OPEN_POSITIONS = 6
 FOCUS_SYMBOL_PREFIXES = {
     "XAUUSD": ("XAUUSD", "GOLD"),
     "BTCUSD": ("BTCUSD", "XBTUSD"),
@@ -642,8 +643,11 @@ def execute(request: ConfirmationRequest):
             "message": "Paper order simulated. No broker order was submitted.",
         }
 
-    mt5 = _mt5()
+    mt5 = None
+    if request.auto_submit:
+        AUTO_DEMO_LOCK.acquire()
     try:
+        mt5 = _mt5()
         account = mt5.account_info()
         if account is None or account.login != proposal["account_login"]:
             raise HTTPException(status_code=409, detail="The connected MT5 account changed. Run analysis again.")
@@ -677,10 +681,13 @@ def execute(request: ConfirmationRequest):
             positions = mt5.positions_get()
             if positions is None:
                 raise HTTPException(status_code=503, detail="Could not verify open positions; automatic order not submitted.")
-            if positions:
+            if len(positions) >= MAX_AUTO_DEMO_OPEN_POSITIONS:
                 raise HTTPException(
                     status_code=409,
-                    detail="Automatic demo trading allows only one open position at a time.",
+                    detail=(
+                        "Automatic demo trading allows a maximum of "
+                        f"{MAX_AUTO_DEMO_OPEN_POSITIONS} open positions at a time."
+                    ),
                 )
 
         day_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -710,13 +717,12 @@ def execute(request: ConfirmationRequest):
             proposal["bar_time"],
         )
         if request.auto_submit:
-            with AUTO_DEMO_LOCK:
-                if app.state.auto_demo_attempts.get(signal_key, 0) > datetime.now(timezone.utc).timestamp():
-                    raise HTTPException(
-                        status_code=409,
-                        detail="An automatic order was already attempted for this market candle.",
-                    )
-                app.state.auto_demo_attempts[signal_key] = datetime.now(timezone.utc).timestamp() + 300
+            if app.state.auto_demo_attempts.get(signal_key, 0) > datetime.now(timezone.utc).timestamp():
+                raise HTTPException(
+                    status_code=409,
+                    detail="An automatic order was already attempted for this market candle.",
+                )
+            app.state.auto_demo_attempts[signal_key] = datetime.now(timezone.utc).timestamp() + 300
 
         order_type = mt5.ORDER_TYPE_BUY if proposal["side"] == "buy" else mt5.ORDER_TYPE_SELL
         filling_flags = getattr(symbol_info, "filling_mode", None)
@@ -826,7 +832,12 @@ def execute(request: ConfirmationRequest):
             ),
         }
     finally:
-        mt5.shutdown()
+        try:
+            if mt5 is not None:
+                mt5.shutdown()
+        finally:
+            if request.auto_submit:
+                AUTO_DEMO_LOCK.release()
 
 
 @app.post("/api/paper-order")

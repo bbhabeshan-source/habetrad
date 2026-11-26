@@ -132,7 +132,7 @@ class TradeExecutionTests(unittest.TestCase):
         )
         mt5.symbol_info_tick.return_value = SimpleNamespace(bid=1.1, ask=1.1001)
         mt5.history_deals_get.return_value = []
-        mt5.positions_get.return_value = []
+        mt5.positions_get.return_value = [SimpleNamespace(ticket=ticket) for ticket in range(5)]
         mt5.order_check.return_value = SimpleNamespace(retcode=0, comment="Done")
         mt5.order_send.return_value = SimpleNamespace(retcode=10009, order=123, deal=456)
 
@@ -169,6 +169,7 @@ class TradeExecutionTests(unittest.TestCase):
             mt5.order_send.call_args.args[0]["type_filling"],
             mt5.ORDER_FILLING_IOC,
         )
+        self.assertEqual(mt5.positions_get.call_count, 2)
         self.assertEqual(mt5.shutdown.call_count, 2)
 
     def test_broker_order_check_rejection_is_reported_without_sending(self):
@@ -321,7 +322,7 @@ class TradeExecutionTests(unittest.TestCase):
         self.assertEqual(error.exception.status_code, 400)
         get_mt5.assert_not_called()
 
-    def test_automatic_demo_skips_if_an_open_position_exists(self):
+    def test_automatic_demo_blocks_a_seventh_open_position(self):
         mt5 = Mock()
         mt5.ACCOUNT_TRADE_MODE_DEMO = 0
         mt5.ACCOUNT_TRADE_MODE_REAL = 2
@@ -332,7 +333,9 @@ class TradeExecutionTests(unittest.TestCase):
         )
         mt5.symbol_info.return_value = SimpleNamespace(visible=True)
         mt5.symbol_info_tick.return_value = SimpleNamespace(bid=1.1, ask=1.1001)
-        mt5.positions_get.return_value = [SimpleNamespace(ticket=123)]
+        mt5.positions_get.return_value = [
+            SimpleNamespace(ticket=ticket) for ticket in range(6)
+        ]
 
         with patch("app._mt5", return_value=mt5):
             with self.assertRaises(HTTPException) as error:
@@ -344,8 +347,52 @@ class TradeExecutionTests(unittest.TestCase):
                 ))
 
         self.assertEqual(error.exception.status_code, 409)
-        self.assertIn("one open position", error.exception.detail)
+        self.assertIn("maximum of 6 open positions", error.exception.detail)
         mt5.order_send.assert_not_called()
+        mt5.shutdown.assert_called_once()
+
+    def test_manual_demo_approval_is_not_blocked_by_auto_position_cap(self):
+        mt5 = Mock()
+        mt5.ACCOUNT_TRADE_MODE_DEMO = 0
+        mt5.ACCOUNT_TRADE_MODE_REAL = 2
+        mt5.ORDER_TYPE_BUY = 0
+        mt5.ORDER_TYPE_SELL = 1
+        mt5.TRADE_ACTION_DEAL = 1
+        mt5.ORDER_TIME_GTC = 0
+        mt5.SYMBOL_FILLING_IOC = 2
+        mt5.SYMBOL_FILLING_FOK = 1
+        mt5.SYMBOL_TRADE_EXECUTION_MARKET = 2
+        mt5.ORDER_FILLING_IOC = 1
+        mt5.ORDER_FILLING_FOK = 0
+        mt5.ORDER_FILLING_RETURN = 2
+        mt5.TRADE_RETCODE_DONE = 10009
+        mt5.TRADE_RETCODE_PLACED = 10008
+        mt5.account_info.return_value = SimpleNamespace(
+            login=42,
+            trade_mode=0,
+            equity=10000,
+        )
+        mt5.symbol_info.return_value = SimpleNamespace(
+            visible=True,
+            filling_mode=3,
+            trade_exemode=2,
+        )
+        mt5.symbol_info_tick.return_value = SimpleNamespace(bid=1.1, ask=1.1001)
+        mt5.history_deals_get.return_value = []
+        mt5.positions_get.return_value = [SimpleNamespace(ticket=ticket) for ticket in range(6)]
+        mt5.order_check.return_value = SimpleNamespace(retcode=0, comment="Done")
+        mt5.order_send.return_value = SimpleNamespace(retcode=10009, order=123, deal=456)
+
+        with patch("app._mt5", return_value=mt5):
+            result = execute(ConfirmationRequest(
+                proposal_id=self.proposal_id,
+                mode="demo",
+                confirmed=True,
+            ))
+
+        self.assertEqual(result["status"], "broker_order_submitted")
+        mt5.positions_get.assert_not_called()
+        mt5.order_send.assert_called_once()
         mt5.shutdown.assert_called_once()
 
     def test_daily_loss_limit_includes_proposed_order_risk(self):
