@@ -11,6 +11,7 @@ let scanInProgress = false;
 let scanRequested = false;
 let quoteInProgress = false;
 let orderInProgress = false;
+let executionStatusMessage = "";
 let connectedTradeMode = null;
 let isSwitchingAccount = false;
 let accountGeneration = 0;
@@ -29,7 +30,6 @@ const chartOhlc = document.getElementById("chartOhlc");
 const paperButton = document.getElementById("paperButton");
 const paperConfirm = document.getElementById("paperConfirm");
 const executionMode = document.getElementById("executionMode");
-const executionPolicy = document.getElementById("executionPolicy");
 const accountTypeInput = document.getElementById("mt5AccountType");
 const switchAccountButton = document.getElementById("switchAccountButton");
 const cancelConnectButton = document.getElementById("cancelConnectButton");
@@ -46,6 +46,20 @@ const chartLayout = { left: 12, right: 84, top: 30, bottom: 22, volumeHeight: 48
 function showNotice(message) {
   notice.textContent = message;
   notice.hidden = !message;
+}
+
+async function readApiJson(response) {
+  const body = await response.text();
+  try {
+    return JSON.parse(body);
+  } catch {
+    const preview = body.trim().replace(/\s+/g, " ").slice(0, 180);
+    const contentType = response.headers.get("content-type") || "unknown content type";
+    throw new Error(
+      `Server returned a non-JSON response (HTTP ${response.status}, ${contentType})`
+      + (preview ? `: ${preview}` : "."),
+    );
+  }
 }
 
 function formatPrice(value, digits = 2) {
@@ -107,7 +121,7 @@ function friendlyConnectionMessage(reason) {
 async function loadStatus() {
   try {
     const response = await fetch("/api/status");
-    const data = await response.json();
+    const data = await readApiJson(response);
     isConnected = Boolean(data.mt5.connected);
     mt5ConnectionSupported = !String(data.mt5.reason || "")
       .toLowerCase()
@@ -117,7 +131,6 @@ async function loadStatus() {
       accountTypeInput.value = connectedTradeMode;
       executionMode.value = connectedTradeMode;
     }
-    syncExecutionPolicy();
     syncConnectionControls();
     statusElement.querySelector("strong").textContent = isConnected
       ? `MT5 CONNECTED · ${data.mt5.login || data.mt5.server || "BROKER"}`
@@ -136,23 +149,11 @@ async function loadStatus() {
     isConnected = false;
     mt5ConnectionSupported = false;
     connectedTradeMode = null;
-    syncExecutionPolicy();
     syncConnectionControls();
     updateAccountSnapshot({ connected: false });
     statusElement.querySelector("strong").textContent = "STATUS UNAVAILABLE";
     showNotice("Could not check the MT5 connection. Refresh the page or restart the local server.");
   }
-}
-
-function syncExecutionPolicy() {
-  const autoDemoOption = executionPolicy.querySelector('option[value="auto_demo"]');
-  autoDemoOption.disabled = connectedTradeMode !== "demo";
-  if (autoDemoOption.disabled && executionPolicy.value === "auto_demo") {
-    executionPolicy.value = "manual";
-  }
-  const autoDemo = executionPolicy.value === "auto_demo";
-  executionMode.disabled = autoDemo;
-  if (autoDemo) executionMode.value = "demo";
 }
 
 async function refreshLiveQuote() {
@@ -164,7 +165,7 @@ async function refreshLiveQuote() {
     const timeframe = timeframeInput.value;
     const query = new URLSearchParams({ symbol, timeframe });
     const response = await fetch(`/api/quote?${query}`);
-    const data = await response.json();
+    const data = await readApiJson(response);
     if (requestAccountGeneration !== accountGeneration) return;
     if (!response.ok) throw new Error(data.detail || "Live quote unavailable.");
     if (symbol !== symbolInput.value.trim() || timeframe !== timeframeInput.value) return;
@@ -266,7 +267,7 @@ function updateActiveSymbol() {
 async function loadSymbols() {
   try {
     const response = await fetch("/api/symbols");
-    const data = await response.json();
+    const data = await readApiJson(response);
     if (!response.ok || !Array.isArray(data.symbols)) {
       throw new Error(data.detail || "The broker symbol list is unavailable.");
     }
@@ -302,7 +303,7 @@ async function connectAccount(event) {
         server: document.getElementById("mt5Server").value.trim(),
       }),
     });
-    const result = await response.json();
+    const result = await readApiJson(response);
     if (!response.ok) throw new Error(result.detail || "MT5 connection failed.");
     isSwitchingAccount = false;
     accountGeneration += 1;
@@ -386,7 +387,7 @@ function renderAnalysis(data, preserveViewport = false) {
     `20 BAR HIGH / LOW: ${formatPrice(indicators.range20_high, digits)} / ${formatPrice(indicators.range20_low, digits)}`,
   );
   setValue("newsValue", data.news.message);
-  setValue("tradeStatus", data.trade_status);
+  setValue("tradeStatus", executionStatusMessage || data.trade_status);
   setValue(
     "accountBadge",
     `${String(data.account.trade_mode || "ACCOUNT").toUpperCase()} · ${data.account.equity} ${data.account.currency}`,
@@ -408,7 +409,6 @@ function renderAnalysis(data, preserveViewport = false) {
 
 function renderProposals(proposals, data) {
   const list = document.getElementById("proposalsList");
-  let autoAttemptSelected = false;
   const now = Date.now() / 1000;
   for (const [id, proposal] of pendingProposals) {
     if (proposal.expires_at <= now) {
@@ -461,23 +461,11 @@ function renderProposals(proposals, data) {
     const approve = document.createElement("button");
     approve.type = "button";
     approve.className = "proposal-approve";
-    const shouldAutoDemo = Boolean(scanTimer)
-      && executionPolicy.value === "auto_demo"
-      && connectedTradeMode === "demo"
-      && isConnected;
-    const autoDemo = shouldAutoDemo && !autoAttemptSelected;
-    if (autoDemo) autoAttemptSelected = true;
-    approve.textContent = autoDemo
-      ? "AUTO-SUBMITTING…"
-      : shouldAutoDemo
-        ? "ONE AUTO ORDER PER SCAN"
-        : "REVIEW & APPROVE";
-    approve.disabled = shouldAutoDemo;
+    approve.textContent = "APPROVE & TRADE";
     approve.addEventListener("click", () => submitProposal(proposal));
     card.appendChild(approve);
     list.querySelector(".empty-note")?.remove();
     list.prepend(card);
-    if (autoDemo) submitProposal(proposal, true);
   });
   let emptyNote = list.querySelector(".empty-note");
   if (pendingProposals.size === 0) {
@@ -495,14 +483,15 @@ function renderProposals(proposals, data) {
   setValue("proposalCount", String(pendingProposals.size));
 }
 
-function clearPendingProposals() {
+function clearPendingProposals(message = "Account changed. Run analysis for fresh proposals.") {
   pendingProposals.clear();
   seenSignalKeys.clear();
+  executionStatusMessage = "";
   const list = document.getElementById("proposalsList");
   if (list) {
     const note = document.createElement("p");
     note.className = "empty-note";
-    note.textContent = "Account changed. Run analysis for fresh proposals.";
+    note.textContent = message;
     list.replaceChildren(note);
   }
   setValue("proposalCount", "0");
@@ -768,7 +757,7 @@ async function analyze({ preserveViewport = false } = {}) {
         risk_percent: riskPercent,
       }),
     });
-    const data = await response.json();
+    const data = await readApiJson(response);
     if (requestAccountGeneration !== accountGeneration) return;
     if (!response.ok) throw new Error(data.detail || "Could not load market data.");
     renderAnalysis(data, preserveViewport);
@@ -795,29 +784,19 @@ async function analyze({ preserveViewport = false } = {}) {
   }
 }
 
-async function submitProposal(proposal, autoDemo = false) {
-  const mode = autoDemo ? "demo" : executionMode.value;
-  if (autoDemo && (!isConnected || connectedTradeMode !== "demo")) {
-    showNotice("Automatic order submission is restricted to the connected MT5 demo account.");
+async function submitProposal(proposal) {
+  const mode = executionMode.value;
+  if (mode !== "paper" && mode !== connectedTradeMode) {
+    executionStatusMessage = `Order not submitted: your MT5 account is ${connectedTradeMode || "not identified"}. Select the matching order mode.`;
+    setValue("tradeStatus", executionStatusMessage);
+    showNotice(executionStatusMessage);
     return;
-  }
-  if (!autoDemo && mode !== "paper" && mode !== connectedTradeMode) {
-    showNotice(`Your MT5 account is ${connectedTradeMode || "not identified"}. Select the matching order mode.`);
-    return;
-  }
-  if (!autoDemo) {
-    const modeLabel = mode === "paper" ? "PAPER SIMULATION" : `MT5 ${mode.toUpperCase()}`;
-    const confirmed = window.confirm(
-      `${modeLabel}\n\n${proposal.label} ${proposal.side.toUpperCase()} ${proposal.symbol}\n`
-      + `Entry ${proposal.entry} · Stop ${proposal.stop_loss} · Target ${proposal.take_profit}\n`
-      + `Size ${proposal.volume} lots · estimated risk ${proposal.risk_amount} ${proposal.currency} (${proposal.risk_percent}% of equity)\n\n`
-      + "Submit this order?",
-    );
-    if (!confirmed) return;
   }
 
   if (orderInProgress) return;
   orderInProgress = true;
+  executionStatusMessage = "Approval received. Validating order with MT5…";
+  setValue("tradeStatus", executionStatusMessage);
   const button = document.querySelector(`[data-proposal-id="${CSS.escape(proposal.proposal_id)}"] .proposal-approve`);
   if (button) button.disabled = true;
   try {
@@ -827,23 +806,23 @@ async function submitProposal(proposal, autoDemo = false) {
       body: JSON.stringify({
         proposal_id: proposal.proposal_id,
         mode,
-        confirmed: !autoDemo,
-        auto_submit: autoDemo,
+        confirmed: true,
+        auto_submit: false,
         daily_loss_limit: Number(document.getElementById("dailyLossLimit").value),
       }),
     });
-    const result = await response.json();
+    const result = await readApiJson(response);
     if (!response.ok) throw new Error(result.detail || "Order was not submitted.");
     pendingProposals.delete(proposal.proposal_id);
     document.querySelector(`[data-proposal-id="${CSS.escape(proposal.proposal_id)}"]`)?.remove();
     setValue("proposalCount", String(pendingProposals.size));
-    setValue("tradeStatus", result.message);
+    executionStatusMessage = result.message;
+    setValue("tradeStatus", executionStatusMessage);
     setValue("paperStatus", `${result.message} ${result.symbol} ${result.side.toUpperCase()} ${result.volume} lots.`);
   } catch (error) {
-    if (button) {
-      button.disabled = false;
-      if (autoDemo) button.textContent = "REVIEW & APPROVE";
-    }
+    if (button) button.disabled = false;
+    executionStatusMessage = `Order not submitted: ${error.message}`;
+    setValue("tradeStatus", executionStatusMessage);
     showNotice(error.message);
   } finally {
     orderInProgress = false;
@@ -859,7 +838,10 @@ function toggleBot() {
     button.textContent = "START SCANNING";
     button.classList.remove("running");
     status.textContent = "STOPPED";
-    setValue("tradeStatus", "Scanner stopped. Pending proposals remain available for review.");
+    setValue(
+      "tradeStatus",
+      executionStatusMessage || "Scanner stopped. Pending proposals remain available for your approval.",
+    );
     return;
   }
   if (isSwitchingAccount) {
@@ -878,7 +860,7 @@ function toggleBot() {
   button.textContent = "STOP SCANNING";
   button.classList.add("running");
   status.textContent = "SCANNING · 15S";
-  setValue("tradeStatus", "Scanner running for the selected pair and timeframe. Orders still require your approval.");
+  setValue("tradeStatus", "Scanner running. Signals are for review; each order waits for your approval.");
   analyze({ preserveViewport: true });
 }
 
@@ -926,7 +908,7 @@ async function submitPaperOrder() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    const result = await response.json();
+    const result = await readApiJson(response);
     if (!response.ok) throw new Error(result.detail || "Paper order failed.");
     setValue("paperStatus", `${result.message} ${result.symbol} ${result.side.toUpperCase()} ${result.volume} lots.`);
     paperConfirm.checked = false;
@@ -964,7 +946,6 @@ document.getElementById("resetChart").addEventListener("click", () => {
   drawChart();
 });
 document.getElementById("botToggle").addEventListener("click", toggleBot);
-executionPolicy.addEventListener("change", syncExecutionPolicy);
 chart.addEventListener("pointerdown", (event) => {
   if (!marketData || event.button !== 0) return;
   chart.setPointerCapture(event.pointerId);
