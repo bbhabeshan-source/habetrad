@@ -834,7 +834,13 @@ def execute(request: ConfirmationRequest):
     finally:
         try:
             if mt5 is not None:
-                mt5.shutdown()
+                try:
+                    mt5.shutdown()
+                except Exception:
+                    logger.exception(
+                        "MT5 shutdown failed after order request for %s",
+                        proposal["symbol"],
+                    )
         finally:
             if request.mode == "demo":
                 AUTO_DEMO_LOCK.release()

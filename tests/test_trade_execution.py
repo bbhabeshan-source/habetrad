@@ -247,15 +247,18 @@ class TradeExecutionTests(unittest.TestCase):
         mt5.positions_get.return_value = [SimpleNamespace(ticket=ticket) for ticket in range(5)]
         mt5.order_check.return_value = SimpleNamespace(retcode=0, comment="Done")
         mt5.order_send.return_value = SimpleNamespace(retcode=10009, order=123, deal=456)
+        mt5.shutdown.side_effect = RuntimeError("simulated MT5 shutdown failure")
 
-        with patch("app._mt5", return_value=mt5):
-            result = execute(ConfirmationRequest(
-                proposal_id=self.proposal_id,
-                mode="demo",
-                confirmed=True,
-            ))
+        with self.assertLogs("app", level="ERROR") as logs:
+            with patch("app._mt5", return_value=mt5):
+                result = execute(ConfirmationRequest(
+                    proposal_id=self.proposal_id,
+                    mode="demo",
+                    confirmed=True,
+                ))
 
         self.assertEqual(result["status"], "broker_order_submitted")
+        self.assertIn("MT5 shutdown failed after order request", logs.output[0])
         mt5.order_check.assert_called_once()
         mt5.order_send.assert_called_once()
         self.assertEqual(
