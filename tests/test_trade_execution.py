@@ -198,6 +198,7 @@ class TradeExecutionTests(unittest.TestCase):
         )
         mt5.symbol_info_tick.return_value = SimpleNamespace(bid=1.1, ask=1.1001)
         mt5.history_deals_get.return_value = []
+        mt5.positions_get.return_value = []
         mt5.order_check.return_value = SimpleNamespace(retcode=10016, comment="Invalid stops")
 
         with patch("app._mt5", return_value=mt5):
@@ -243,6 +244,7 @@ class TradeExecutionTests(unittest.TestCase):
         )
         mt5.symbol_info_tick.return_value = SimpleNamespace(bid=1.1, ask=1.1001)
         mt5.history_deals_get.return_value = []
+        mt5.positions_get.return_value = [SimpleNamespace(ticket=ticket) for ticket in range(5)]
         mt5.order_check.return_value = SimpleNamespace(retcode=0, comment="Done")
         mt5.order_send.return_value = SimpleNamespace(retcode=10009, order=123, deal=456)
 
@@ -292,6 +294,7 @@ class TradeExecutionTests(unittest.TestCase):
         )
         mt5.symbol_info_tick.return_value = SimpleNamespace(bid=1.1, ask=1.1001)
         mt5.history_deals_get.return_value = []
+        mt5.positions_get.return_value = []
         mt5.order_check.return_value = None
         mt5.last_error.return_value = (-2, "Terminal failure")
 
@@ -351,7 +354,7 @@ class TradeExecutionTests(unittest.TestCase):
         mt5.order_send.assert_not_called()
         mt5.shutdown.assert_called_once()
 
-    def test_manual_demo_approval_is_not_blocked_by_auto_position_cap(self):
+    def test_manual_demo_approval_blocks_a_seventh_open_position(self):
         mt5 = Mock()
         mt5.ACCOUNT_TRADE_MODE_DEMO = 0
         mt5.ACCOUNT_TRADE_MODE_REAL = 2
@@ -384,15 +387,17 @@ class TradeExecutionTests(unittest.TestCase):
         mt5.order_send.return_value = SimpleNamespace(retcode=10009, order=123, deal=456)
 
         with patch("app._mt5", return_value=mt5):
-            result = execute(ConfirmationRequest(
-                proposal_id=self.proposal_id,
-                mode="demo",
-                confirmed=True,
-            ))
+            with self.assertRaises(HTTPException) as error:
+                execute(ConfirmationRequest(
+                    proposal_id=self.proposal_id,
+                    mode="demo",
+                    confirmed=True,
+                ))
 
-        self.assertEqual(result["status"], "broker_order_submitted")
-        mt5.positions_get.assert_not_called()
-        mt5.order_send.assert_called_once()
+        self.assertEqual(error.exception.status_code, 409)
+        self.assertIn("maximum of 6 open positions", error.exception.detail)
+        mt5.positions_get.assert_called_once()
+        mt5.order_send.assert_not_called()
         mt5.shutdown.assert_called_once()
 
     def test_daily_loss_limit_includes_proposed_order_risk(self):
@@ -406,6 +411,7 @@ class TradeExecutionTests(unittest.TestCase):
         )
         mt5.symbol_info.return_value = SimpleNamespace(visible=True)
         mt5.symbol_info_tick.return_value = SimpleNamespace(bid=1.0999, ask=1.1001)
+        mt5.positions_get.return_value = []
         mt5.history_deals_get.return_value = [
             SimpleNamespace(profit=-150, swap=0, commission=0),
         ]

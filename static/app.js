@@ -29,7 +29,6 @@ const chartOhlc = document.getElementById("chartOhlc");
 const paperButton = document.getElementById("paperButton");
 const paperConfirm = document.getElementById("paperConfirm");
 const executionMode = document.getElementById("executionMode");
-const executionPolicy = document.getElementById("executionPolicy");
 const accountTypeInput = document.getElementById("mt5AccountType");
 const switchAccountButton = document.getElementById("switchAccountButton");
 const cancelConnectButton = document.getElementById("cancelConnectButton");
@@ -117,7 +116,6 @@ async function loadStatus() {
       accountTypeInput.value = connectedTradeMode;
       executionMode.value = connectedTradeMode;
     }
-    syncExecutionPolicy();
     syncConnectionControls();
     statusElement.querySelector("strong").textContent = isConnected
       ? `MT5 CONNECTED · ${data.mt5.login || data.mt5.server || "BROKER"}`
@@ -136,23 +134,11 @@ async function loadStatus() {
     isConnected = false;
     mt5ConnectionSupported = false;
     connectedTradeMode = null;
-    syncExecutionPolicy();
     syncConnectionControls();
     updateAccountSnapshot({ connected: false });
     statusElement.querySelector("strong").textContent = "STATUS UNAVAILABLE";
     showNotice("Could not check the MT5 connection. Refresh the page or restart the local server.");
   }
-}
-
-function syncExecutionPolicy() {
-  const autoDemoOption = executionPolicy.querySelector('option[value="auto_demo"]');
-  autoDemoOption.disabled = connectedTradeMode !== "demo";
-  if (connectedTradeMode === "live" && executionPolicy.value === "auto_demo") {
-    executionPolicy.value = "manual";
-  }
-  const autoDemo = executionPolicy.value === "auto_demo" && connectedTradeMode === "demo";
-  executionMode.disabled = autoDemo;
-  if (autoDemo) executionMode.value = "demo";
 }
 
 async function refreshLiveQuote() {
@@ -408,7 +394,6 @@ function renderAnalysis(data, preserveViewport = false) {
 
 function renderProposals(proposals, data) {
   const list = document.getElementById("proposalsList");
-  let autoAttemptSelected = false;
   const now = Date.now() / 1000;
   for (const [id, proposal] of pendingProposals) {
     if (proposal.expires_at <= now) {
@@ -461,31 +446,11 @@ function renderProposals(proposals, data) {
     const approve = document.createElement("button");
     approve.type = "button";
     approve.className = "proposal-approve";
-    const autoDemoSelected = executionPolicy.value === "auto_demo"
-      && connectedTradeMode === "demo"
-      && isConnected;
-    const shouldAutoDemo = Boolean(scanTimer) && autoDemoSelected;
-    const autoDemo = shouldAutoDemo && !autoAttemptSelected;
-    if (autoDemo) autoAttemptSelected = true;
-    approve.textContent = autoDemo
-      ? "AUTO-SUBMITTING…"
-      : shouldAutoDemo
-        ? "ONE AUTO ORDER PER SCAN"
-        : autoDemoSelected
-          ? "START SCANNING FOR AUTO-TRADING"
-          : "REVIEW & APPROVE";
-    approve.disabled = autoDemoSelected;
-    approve.addEventListener("click", () => {
-      if (executionPolicy.value === "auto_demo") {
-        showNotice("Start scanning to submit eligible demo orders automatically, without individual approvals.");
-        return;
-      }
-      submitProposal(proposal);
-    });
+    approve.textContent = "APPROVE & TRADE";
+    approve.addEventListener("click", () => submitProposal(proposal));
     card.appendChild(approve);
     list.querySelector(".empty-note")?.remove();
     list.prepend(card);
-    if (autoDemo) submitProposal(proposal, true);
   });
   let emptyNote = list.querySelector(".empty-note");
   if (pendingProposals.size === 0) {
@@ -803,25 +768,11 @@ async function analyze({ preserveViewport = false } = {}) {
   }
 }
 
-async function submitProposal(proposal, autoDemo = false) {
-  const mode = autoDemo ? "demo" : executionMode.value;
-  if (autoDemo && (!isConnected || connectedTradeMode !== "demo")) {
-    showNotice("Automatic order submission is restricted to the connected MT5 demo account.");
-    return;
-  }
-  if (!autoDemo && mode !== "paper" && mode !== connectedTradeMode) {
+async function submitProposal(proposal) {
+  const mode = executionMode.value;
+  if (mode !== "paper" && mode !== connectedTradeMode) {
     showNotice(`Your MT5 account is ${connectedTradeMode || "not identified"}. Select the matching order mode.`);
     return;
-  }
-  if (!autoDemo) {
-    const modeLabel = mode === "paper" ? "PAPER SIMULATION" : `MT5 ${mode.toUpperCase()}`;
-    const confirmed = window.confirm(
-      `${modeLabel}\n\n${proposal.label} ${proposal.side.toUpperCase()} ${proposal.symbol}\n`
-      + `Entry ${proposal.entry} · Stop ${proposal.stop_loss} · Target ${proposal.take_profit}\n`
-      + `Size ${proposal.volume} lots · estimated risk ${proposal.risk_amount} ${proposal.currency} (${proposal.risk_percent}% of equity)\n\n`
-      + "Submit this order?",
-    );
-    if (!confirmed) return;
   }
 
   if (orderInProgress) return;
@@ -835,8 +786,8 @@ async function submitProposal(proposal, autoDemo = false) {
       body: JSON.stringify({
         proposal_id: proposal.proposal_id,
         mode,
-        confirmed: !autoDemo,
-        auto_submit: autoDemo,
+        confirmed: true,
+        auto_submit: false,
         daily_loss_limit: Number(document.getElementById("dailyLossLimit").value),
       }),
     });
@@ -848,10 +799,7 @@ async function submitProposal(proposal, autoDemo = false) {
     setValue("tradeStatus", result.message);
     setValue("paperStatus", `${result.message} ${result.symbol} ${result.side.toUpperCase()} ${result.volume} lots.`);
   } catch (error) {
-    if (button) {
-      button.disabled = autoDemo;
-      if (autoDemo) button.textContent = "AUTO-SUBMIT BLOCKED · CHECK MESSAGE";
-    }
+    if (button) button.disabled = false;
     showNotice(error.message);
   } finally {
     orderInProgress = false;
@@ -867,12 +815,7 @@ function toggleBot() {
     button.textContent = "START SCANNING";
     button.classList.remove("running");
     status.textContent = "STOPPED";
-    setValue(
-      "tradeStatus",
-      executionPolicy.value === "auto_demo"
-        ? "Auto-demo scanner stopped. No further orders will be submitted until scanning resumes."
-        : "Scanner stopped. Pending proposals remain available for review.",
-    );
+    setValue("tradeStatus", "Scanner stopped. Pending proposals remain available for your approval.");
     return;
   }
   if (isSwitchingAccount) {
@@ -891,16 +834,7 @@ function toggleBot() {
   button.textContent = "STOP SCANNING";
   button.classList.add("running");
   status.textContent = "SCANNING · 15S";
-  const autoDemo = executionPolicy.value === "auto_demo" && connectedTradeMode === "demo";
-  if (autoDemo) {
-    clearPendingProposals("Auto-demo scanner started. Checking for a fresh eligible setup.");
-  }
-  setValue(
-    "tradeStatus",
-    autoDemo
-      ? "Auto-demo is active: qualifying orders submit without individual approval. Stop scanning to pause."
-      : "Scanner running. New orders will wait for your individual approval.",
-  );
+  setValue("tradeStatus", "Scanner running. Signals are for review; each order waits for your approval.");
   analyze({ preserveViewport: true });
 }
 
@@ -986,7 +920,6 @@ document.getElementById("resetChart").addEventListener("click", () => {
   drawChart();
 });
 document.getElementById("botToggle").addEventListener("click", toggleBot);
-executionPolicy.addEventListener("change", syncExecutionPolicy);
 chart.addEventListener("pointerdown", (event) => {
   if (!marketData || event.button !== 0) return;
   chart.setPointerCapture(event.pointerId);

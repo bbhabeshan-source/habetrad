@@ -21,7 +21,7 @@ TIMEFRAME_NAMES = (
     "M20", "M30", "H1", "H2", "H3", "H4", "H6", "H8", "H12", "D1",
 )
 FOCUS_SYMBOL_ORDER = ("XAUUSD", "BTCUSD", "GBPUSD", "EURUSD", "GBPJPY", "ETHUSD")
-MAX_AUTO_DEMO_OPEN_POSITIONS = 6
+MAX_DEMO_OPEN_POSITIONS = 6
 FOCUS_SYMBOL_PREFIXES = {
     "XAUUSD": ("XAUUSD", "GOLD"),
     "BTCUSD": ("BTCUSD", "XBTUSD"),
@@ -644,7 +644,7 @@ def execute(request: ConfirmationRequest):
         }
 
     mt5 = None
-    if request.auto_submit:
+    if request.mode == "demo":
         AUTO_DEMO_LOCK.acquire()
     try:
         mt5 = _mt5()
@@ -677,16 +677,16 @@ def execute(request: ConfirmationRequest):
                 detail="Price moved materially since the proposal. Re-analyze and review the new setup.",
             )
 
-        if request.auto_submit:
+        if request.mode == "demo":
             positions = mt5.positions_get()
             if positions is None:
-                raise HTTPException(status_code=503, detail="Could not verify open positions; automatic order not submitted.")
-            if len(positions) >= MAX_AUTO_DEMO_OPEN_POSITIONS:
+                raise HTTPException(status_code=503, detail="Could not verify open positions; demo order not submitted.")
+            if len(positions) >= MAX_DEMO_OPEN_POSITIONS:
                 raise HTTPException(
                     status_code=409,
                     detail=(
-                        "Automatic demo trading allows a maximum of "
-                        f"{MAX_AUTO_DEMO_OPEN_POSITIONS} open positions at a time."
+                        "Demo trading allows a maximum of "
+                        f"{MAX_DEMO_OPEN_POSITIONS} open positions at a time."
                     ),
                 )
 
@@ -836,7 +836,7 @@ def execute(request: ConfirmationRequest):
             if mt5 is not None:
                 mt5.shutdown()
         finally:
-            if request.auto_submit:
+            if request.mode == "demo":
                 AUTO_DEMO_LOCK.release()
 
 
